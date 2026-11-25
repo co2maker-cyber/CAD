@@ -16,8 +16,8 @@ const fmt = v => { const r = Math.round(v * 100) / 100; return String(Object.is(
 const host = $('#view3d'), panel = $('#panel3d'), tl = $('#timeline');
 
 // ---------------------------------------------------------------- 상태
-const NAMES = { extrude: '돌출', revolve: '회전', box: '상자', cylinder: '원통', sphere: '구', cone: '원뿔', torus: '토러스', boolean: '결합', move: '이동', pattern: '패턴', mirror: '대칭', split: '분할', fillet3d: '모깎기', chamfer3d: '모따기' };
-const ICON = { extrude: '⬆', revolve: '↻', box: '▣', cylinder: '◎', sphere: '●', cone: '▲', torus: '◯', boolean: '⊕', move: '✥', pattern: '⁞', mirror: '⇋', split: '⫽', fillet3d: '◜', chamfer3d: '◸' };
+const NAMES = { extrude: '돌출', revolve: '회전', box: '상자', cylinder: '원통', sphere: '구', cone: '원뿔', torus: '토러스', boolean: '결합', move: '이동', pattern: '패턴', mirror: '대칭', split: '분할', fillet3d: '모깎기', chamfer3d: '모따기', shell: '쉘', remove: '지우기' };
+const ICON = { extrude: '⬆', revolve: '↻', box: '▣', cylinder: '◎', sphere: '●', cone: '▲', torus: '◯', boolean: '⊕', move: '✥', pattern: '⁞', mirror: '⇋', split: '⫽', fillet3d: '◜', chamfer3d: '◸', shell: '▢', remove: '✕' };
 const DEFAULTS = {
   extrude: { profiles: [], plane: 'XY', offset: 0, distance: 20, dir: 'one', op: 'new', target: '' },
   revolve: { profiles: [], plane: 'XY', offset: 0, axis: 'X', angle: 360, op: 'new', target: '' },
@@ -33,6 +33,8 @@ const DEFAULTS = {
   split: { body: '', plane: 'XY', offset: 10 },
   fillet3d: { body: '', edges: [], r: 3 },
   chamfer3d: { body: '', edges: [], d: 2 },
+  shell: { body: '', t: 2, faces: [] },
+  remove: { body: '' },
 };
 const MATERIALS = [['steel', '강철', 7.85], ['al', '알루미늄', 2.70], ['brass', '황동', 8.50], ['abs', 'ABS', 1.04], ['pla', 'PLA', 1.24], ['wood', '나무', 0.60]];
 const BODY_COLORS = ['#9aa9b5', '#c9773f', '#5b8fc7', '#6aa36f', '#c8a64a', '#8e6fc1'];
@@ -43,13 +45,15 @@ let bodies = [];             // [{id, name, geom}]
 let errors = {};             // fid → 메시지
 let beforeIds = {};          // fid → 그 피처 직전의 바디 목록
 let draftTool = null;        // 편집 중인 잘라내기/교차 도구 형상 (미리보기)
-let pickGeom = null, pickSegs = [], draftEdges = [], pickLines = null; // 모깎기·모따기 모서리 고르기
+let pickGeom = null, pickSegs = [], draftEdges = [], pickLines = null, draftFaces = [], pickMesh = null; // 모깎기·모따기 모서리 고르기
 let editing = null;          // {feat, isNew}
 let selBody = null;
 let regions = [], regionsByKey = new Map(), sketchLinesCache = [];
 let view = { display: 'edges', sketch: true, section: false, secAxis: 'z', secPos: 0 };
 let measure = { on: false, pts: [] };
 let dirty = true;
+let memo = [];
+function hashStr(str) { let h1 = 0x811c9dc5, h2 = 0x1234567; for (let i = 0; i < str.length; i++) { const c = str.charCodeAt(i); h1 = Math.imul(h1 ^ c, 16777619); h2 = Math.imul(h2 ^ c, 2246822507); } return (h1 >>> 0).toString(36) + (h2 >>> 0).toString(36) + str.length; }
 
 function load() {
   try { const d = JSON.parse(localStorage.getItem(KEY) || 'null'); if (d && Array.isArray(d.features)) state = sanitizeState(d); else seed(); } catch (_) { seed(); }
@@ -157,6 +161,16 @@ const planeMatrix = (plane, off) => new THREE.Matrix4().multiplyMatrices(PLANES[
 function prep(g) {
   if (g.index) g = g.toNonIndexed();
   for (const k of Object.keys(g.attributes)) if (k !== 'position') g.deleteAttribute(k);
+  // 넓이가 0인 삼각형 제거 (불리언 연산의 광선 판정이 실패하는 원인)
+  const a = g.attributes.position.array; let w = 0;
+  for (let i = 0; i < a.length; i += 9) {
+    const ux = a[i + 3] - a[i], uy = a[i + 4] - a[i + 1], uz = a[i + 5] - a[i + 2], vx = a[i + 6] - a[i], vy = a[i + 7] - a[i + 1], vz = a[i + 8] - a[i + 2];
+    const cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+    if (cx * cx + cy * cy + cz * cz < 1e-16) continue;
+    if (w !== i) for (let k = 0; k < 9; k++) a[w + k] = a[i + k];
+    w += 9;
+  }
+  if (w !== a.length) g.setAttribute('position', new THREE.Float32BufferAttribute(a.slice(0, w), 3));
   g.clearGroups(); g.computeVertexNormals(); g.computeBoundingBox();
   return g;
 }
@@ -335,7 +349,109 @@ function runFeature(f, ents, isDraft) {
       if (!triCount(g)) throw new Error('결과가 비어 있습니다 — 크기를 줄여 보세요');
       b.geom = g; return;
     }
+    case 'remove': {
+      const b = targetOf(f, 'body'); bodies = bodies.filter(x => x !== b); return;
+    }
+    case 'shell': {
+      const b = targetOf(f, 'body'), base = b.geom, scale = geomScale(base), t = +f.t;
+      if (isDraft) { pickGeom = base; draftFaces = f.faces.map(fc => facePatch(base, fc, scale)); }
+      if (!(t > 0)) throw new Error('두께는 0보다 커야 합니다');
+      const inner = shellInner(base, t, f.faces, scale);
+      const vo = massProps(base).V, vi = massProps(inner).V;
+      if (!(vi > 0) || (vi >= vo && !f.faces.length)) throw new Error('두께가 너무 두꺼워 안쪽 형상이 뒤집혔습니다 — 두께를 줄이세요');
+      const g = csg(base, inner, 'cut');
+      if (!triCount(g)) throw new Error('결과가 비어 있습니다 — 두께를 줄이세요');
+      if (Math.abs(massProps(g).V - vo) < vo * 1e-6) throw new Error('속을 비우지 못했습니다 — 두께를 줄이거나 열 면을 다시 고르세요');
+      b.geom = g; return;
+    }
   }
+}
+
+// ---------------------------------------------------------------- 쉘: 표면을 두께만큼 안쪽으로 오프셋한 형상
+function triGrid(g, scale) {
+  const a = g.attributes.position.array, cell = Math.max(scale / 40, 1e-3), grid = new Map(), tris = [];
+  const p = V3(), q = V3(), r = V3();
+  for (let i = 0; i < a.length; i += 9) {
+    p.set(a[i], a[i + 1], a[i + 2]); q.set(a[i + 3], a[i + 4], a[i + 5]); r.set(a[i + 6], a[i + 7], a[i + 8]);
+    const n = V3().subVectors(q, p).cross(V3().subVectors(r, p)); if (n.lengthSq() < 1e-14) continue; n.normalize();
+    const ti = tris.length, tri = new THREE.Triangle(p.clone(), q.clone(), r.clone()); tris.push({ tri, n, area: tri.getArea() });
+    const lo = [Math.min(p.x, q.x, r.x), Math.min(p.y, q.y, r.y), Math.min(p.z, q.z, r.z)].map(v => Math.floor((v - 0.06) / cell));
+    const hi = [Math.max(p.x, q.x, r.x), Math.max(p.y, q.y, r.y), Math.max(p.z, q.z, r.z)].map(v => Math.floor((v + 0.06) / cell));
+    for (let x = lo[0]; x <= hi[0]; x++) for (let y = lo[1]; y <= hi[1]; y++) for (let z = lo[2]; z <= hi[2]; z++) {
+      const k = x + ',' + y + ',' + z; let l = grid.get(k); if (!l) grid.set(k, l = []); l.push(ti);
+    }
+  }
+  return { tris, at: P => grid.get(Math.floor(P.x / cell) + ',' + Math.floor(P.y / cell) + ',' + Math.floor(P.z / cell)) || [] };
+}
+const faceOf = fc => ({ p: V3(fc[0], fc[1], fc[2]), n: V3(fc[3], fc[4], fc[5]).normalize() });
+function shellInner(g, t, faces, scale) {
+  const a = g.attributes.position.array, { tris, at } = triGrid(g, scale), tol = Math.max(0.03, scale * 3e-4), tp = Math.max(0.01, scale * 1e-4);
+  const open = faces.map(faceOf), ext = t + Math.max(1, scale * 0.02);
+  const K = (x, y, z) => Math.round(x * 1e4) + ',' + Math.round(y * 1e4) + ',' + Math.round(z * 1e4);
+  const disp = new Map(), P = V3(), cp = V3();
+  // 실제 모서리와 그 양쪽 면 방향 (모서리 가까이 있는 면 안쪽 점이 오프셋 후 접혀 넘어가지 않도록)
+  const ecell = Math.max(t * 1.5, scale / 40), egrid = new Map(), edges = [];
+  for (const [A, B] of edgeSegs(g, 20)) {
+    const L = A.distanceTo(B); if (L < 1e-6) continue;
+    const mid = A.clone().add(B).multiplyScalar(0.5), ns2 = [];
+    for (const ti of at(mid)) { const T = tris[ti]; T.tri.closestPointToPoint(mid, cp); if (cp.distanceToSquared(mid) > tol * tol) continue; if (!ns2.some(n => n.dot(T.n) > 0.9999)) ns2.push(T.n); }
+    if (ns2.length < 2) continue;
+    const ei = edges.length; edges.push({ line: new THREE.Line3(A, B), ns: ns2 });
+    const r = t * 1.2, lo = [Math.min(A.x, B.x) - r, Math.min(A.y, B.y) - r, Math.min(A.z, B.z) - r].map(v => Math.floor(v / ecell)), hi = [Math.max(A.x, B.x) + r, Math.max(A.y, B.y) + r, Math.max(A.z, B.z) + r].map(v => Math.floor(v / ecell));
+    for (let x = lo[0]; x <= hi[0]; x++) for (let y = lo[1]; y <= hi[1]; y++) for (let z = lo[2]; z <= hi[2]; z++) { const k = x + ',' + y + ',' + z; let l = egrid.get(k); if (!l) egrid.set(k, l = []); l.push(ei); }
+  }
+  for (let i = 0; i < a.length; i += 3) {
+    const k = K(a[i], a[i + 1], a[i + 2]); if (disp.has(k)) continue;
+    P.set(a[i], a[i + 1], a[i + 2]);
+    // 이 점이 닿은(변 위에 놓인 경우 포함) 모든 삼각형의 면 방향을 모음 → T자 이음매에서도 틈이 안 생김
+    const cl = [];
+    for (const ti of at(P)) {
+      const T = tris[ti]; T.tri.closestPointToPoint(P, cp); if (cp.distanceToSquared(P) > tol * tol) continue;
+      const c = cl.find(c => c.n.dot(T.n) > 0.9999); if (c) c.w += T.area; else cl.push({ n: T.n, w: T.area });
+    }
+    // 면 하나에만 놓인 점이 같은 면의 모서리에서 두께 안쪽에 있으면, 그 모서리의 다른 면 방향도 따름
+    if (cl.length === 1) {
+      const n0 = cl[0].n, w0 = cl[0].w;
+      for (const ei of egrid.get(Math.floor(P.x / ecell) + ',' + Math.floor(P.y / ecell) + ',' + Math.floor(P.z / ecell)) || []) {
+        const E = edges[ei]; if (!E.ns.some(n => n.dot(n0) > 0.9999)) continue;
+        E.line.closestPointToPoint(P, true, cp); if (cp.distanceTo(P) > t * 1.2 || Math.abs(n0.dot(V3().subVectors(cp, P))) > tol) continue;
+        for (const n of E.ns) if (!cl.some(c => c.n.dot(n) > 0.9999)) cl.push({ n, w: w0 });
+      }
+    }
+    const wmax = Math.max(1e-12, ...cl.map(c => c.w)), ns = cl.map(c => c.n);
+    // 1단계: 모든 면을 두께만큼 안쪽으로 (닫힌 쉘). 2단계: 열 면 위의 점만 바깥으로 더 밀어 구멍을 냄
+    const M = new THREE.Matrix3().set(1e-6, 0, 0, 0, 1e-6, 0, 0, 0, 1e-6), rhs = V3();
+    // 면적 가중 최소제곱: 아주 얇은 조각 삼각형의 불안정한 법선은 거의 무시됨
+    const avg = V3();
+    for (const { n, w: w0 } of cl) {
+      const w = Math.min(1, w0 / wmax * 20), e = M.elements;
+      e[0] += w * n.x * n.x; e[1] += w * n.x * n.y; e[2] += w * n.x * n.z; e[3] += w * n.y * n.x; e[4] += w * n.y * n.y; e[5] += w * n.y * n.z; e[6] += w * n.z * n.x; e[7] += w * n.z * n.y; e[8] += w * n.z * n.z;
+      rhs.addScaledVector(n, -t * w); avg.addScaledVector(n, w0);
+    }
+    let d = cl.length ? rhs.applyMatrix3(M.invert()) : V3();
+    if (d.length() > 2.5 * t && avg.length() > 1e-12) d = avg.normalize().multiplyScalar(-t);
+    for (const o of open) if (ns.some(n => o.n.dot(n) > 0.9999) && Math.abs(o.n.dot(V3().subVectors(P, o.p))) < tp) d.addScaledVector(o.n, ext + t);
+    disp.set(k, d);
+  }
+  const out = [], A = V3(), B = V3(), C = V3(), mv = i => { const d = disp.get(K(a[i], a[i + 1], a[i + 2])); return V3(a[i] + d.x, a[i + 1] + d.y, a[i + 2] + d.z); };
+  for (let i = 0; i < a.length; i += 9) {
+    A.copy(mv(i)); B.copy(mv(i + 3)); C.copy(mv(i + 6));
+    // 오프셋으로 넓이가 0이 된 삼각형은 버림 (불리언 연산 오류 방지)
+    if (V3().subVectors(B, A).cross(V3().subVectors(C, A)).lengthSq() < 1e-12) continue;
+    out.push(A.x, A.y, A.z, B.x, B.y, B.z, C.x, C.y, C.z);
+  }
+  const ig = new THREE.BufferGeometry(); ig.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
+  return prep(ig);
+}
+// 고른 평면에 놓인 삼각형들 (화면 강조용)
+function facePatch(g, fc, scale) {
+  const { p, n } = faceOf(fc), a = g.attributes.position.array, out = [], tp = Math.max(0.01, scale * 1e-4), A = V3(), B = V3(), C = V3();
+  for (let i = 0; i < a.length; i += 9) {
+    A.set(a[i], a[i + 1], a[i + 2]); B.set(a[i + 3], a[i + 4], a[i + 5]); C.set(a[i + 6], a[i + 7], a[i + 8]);
+    const tn = V3().subVectors(B, A).cross(V3().subVectors(C, A)); if (tn.lengthSq() < 1e-14) continue; tn.normalize();
+    if (tn.dot(n) > 0.9999 && Math.abs(n.dot(V3().subVectors(A, p))) < tp) out.push(...A.toArray(), ...B.toArray(), ...C.toArray());
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- 3D 모서리: 모깎기·모따기
@@ -514,15 +630,27 @@ function featureList() {
 function regen() {
   const ents = D.getEnts();
   regions = sketchRegions(ents); regionsByKey = new Map(regions.map(r => [r.key, r]));
-  for (const b of bodies) b.geom && b.geom.dispose();
-  bodies = []; errors = {}; beforeIds = {}; bodyCounter = 0; draftTool = null; pickGeom = null; pickSegs = []; draftEdges = [];
-  for (const f of featureList()) {
+  bodies = []; errors = {}; beforeIds = {}; bodyCounter = 0; draftTool = null; pickGeom = null; pickSegs = []; draftEdges = []; draftFaces = [];
+  // 바뀌지 않은 앞쪽 피처는 저장해 둔 결과를 다시 씀 (서명 = 스케치 + 이름 + 지금까지의 피처)
+  let sig = hashStr(JSON.stringify(ents) + '|' + JSON.stringify(state.props));
+  const list = featureList(), nextMemo = [];
+  list.forEach((f, i) => {
     beforeIds[f.id] = bodies.map(b => ({ id: b.id, name: b.name }));
-    if (f.suppressed) continue;
-    const snap = bodies.map(b => ({ ...b }));
-    try { runFeature(f, ents, editing && editing.feat === f); }
-    catch (err) { errors[f.id] = err && err.message ? err.message : String(err); bodies = snap; }
-  }
+    const isDraft = !!(editing && editing.feat === f);
+    sig = hashStr(sig + '|' + JSON.stringify(f));
+    const m = memo[i];
+    if (!isDraft && m && m.sig === sig) {
+      bodies = m.bodies.map(b => ({ ...b })); bodyCounter = m.counter; if (m.err) errors[f.id] = m.err;
+      nextMemo.push(m); return;
+    }
+    if (!f.suppressed) {
+      const snap = bodies.map(b => ({ ...b }));
+      try { runFeature(f, ents, isDraft); }
+      catch (err) { errors[f.id] = err && err.message ? err.message : String(err); bodies = snap; }
+    }
+    nextMemo.push(isDraft ? null : { sig, bodies: bodies.map(b => ({ ...b })), counter: bodyCounter, err: errors[f.id] });
+  });
+  memo = nextMemo;
   if (selBody && !findBody(selBody)) selBody = null;
   dirty = false;
   rebuildScene(); renderTimeline();
@@ -580,6 +708,14 @@ function rebuildScene() {
       gBodies.add(new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: sel ? T.accent : (wire ? T.ink : '#1e272d'), clippingPlanes: clip, transparent: true, opacity: wire ? 0.9 : 0.75 })));
     }
   });
+  pickMesh = null;
+  if (editing && pickGeom && editing.feat.type === 'shell') {
+    pickMesh = new THREE.Mesh(pickGeom, new THREE.MeshBasicMaterial({ visible: false })); pickMesh.userData.keepGeom = true; gBodies.add(pickMesh);
+    for (const pos of draftFaces) {
+      if (!pos.length) continue; const fg = new THREE.BufferGeometry(); fg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      const m = new THREE.Mesh(fg, new THREE.MeshBasicMaterial({ color: T.accent, transparent: true, opacity: 0.45, depthTest: false, side: THREE.DoubleSide })); m.renderOrder = 6; gBodies.add(m);
+    }
+  }
   pickLines = null;
   if (editing && pickGeom && (editing.feat.type === 'fillet3d' || editing.feat.type === 'chamfer3d')) {
     const pos = []; for (const [a, b] of pickSegs) pos.push(a.x, a.y, a.z, b.x, b.y, b.z);
@@ -695,6 +831,8 @@ function fieldDefs(f) {
     case 'split': return [{ k: 'body', l: '바디', t: 'body' }, S('plane', '분할 평면', planes), N('offset', '평면 위치')];
     case 'fillet3d': return [{ k: 'body', l: '바디', t: 'body' }, N('r', '반지름'), { k: 'edges', t: 'edges' }];
     case 'chamfer3d': return [{ k: 'body', l: '바디', t: 'body' }, N('d', '거리'), { k: 'edges', t: 'edges' }];
+    case 'shell': return [{ k: 'body', l: '바디', t: 'body' }, N('t', '벽 두께'), { k: 'faces', t: 'faces' }];
+    case 'remove': return [{ k: 'body', l: '지울 바디', t: 'body' }];
   }
   return [];
 }
@@ -716,6 +854,9 @@ function renderDialog() {
       const list = before.filter(b => b.id !== f.target);
       h += list.length ? list.map(b => `<label class="prow"><input type="checkbox" data-tool="${esc(b.id)}" ${f.tools.includes(b.id) ? 'checked' : ''}> ${esc(b.name)}</label>`).join('') : '<p class="hint">다른 바디가 없습니다</p>';
       h += `</div><div class="fields" style="margin-top:8px">`;
+    }
+    else if (d.t === 'faces') {
+      h += `</div><p class="hint" style="margin:10px 0 6px">열 면 <b id="faceCount">${f.faces.length}</b>개 — 화면에서 평평한 면을 클릭해 고르거나 다시 눌러 빼세요. 고르지 않으면 속이 빈 닫힌 바디가 됩니다. 안을 보려면 표시를 반투명으로 바꾸거나 단면을 켜세요.</p><div class="row"><button class="btn" id="faceClear">열 면 모두 빼기</button></div><div class="fields" style="margin-top:8px">`;
     }
     else if (d.t === 'edges') {
       h += `</div><p class="hint" style="margin:10px 0 6px">고른 모서리 <b id="edgeCount">${f.edges.length}</b>개 — 화면의 파란 모서리를 클릭해 고르거나 다시 눌러 빼세요. 직선과 원형 모서리를 고를 수 있습니다.</p><div class="row"><button class="btn" id="edgeClear">모서리 모두 빼기</button></div><div class="fields" style="margin-top:8px">`;
@@ -741,6 +882,7 @@ function updateDlgStatus() {
   el.textContent = err ? err : '';
   const ok = $('#dlgOk'); if (ok) ok.disabled = !!err && !editing.feat.suppressed;
   const ec = $('#edgeCount'); if (ec) ec.textContent = editing.feat.edges.length;
+  const fcn = $('#faceCount'); if (fcn) fcn.textContent = editing.feat.faces.length;
   panel.querySelectorAll('[data-prof]').forEach(c => { c.checked = editing.feat.profiles.includes(c.dataset.prof); });
 }
 function renderPanel() {
@@ -762,7 +904,7 @@ function renderPanel() {
       <div class="swatches" style="margin-top:10px">${BODY_COLORS.map(c => `<button class="sw" data-bcolor="${c}" aria-pressed="${bodyColor(b, i) === c}" style="background:${c}" title="색상"></button>`).join('')}</div>
       <dl class="info" style="margin-top:12px"><dt>부피</dt><dd>${fmt(mp.V / 1000)} cm³</dd><dt>표면적</dt><dd>${fmt(mp.A)} mm²</dd>
       <dt>질량</dt><dd>${fmt(mp.V / 1000 * mat[2])} g</dd><dt>크기</dt><dd>${fmt(sz.x)} × ${fmt(sz.y)} × ${fmt(sz.z)}</dd>
-      <dt>무게중심</dt><dd>${fmt(mp.c.x)}, ${fmt(mp.c.y)}, ${fmt(mp.c.z)}</dd><dt>삼각형</dt><dd>${triCount(b.geom).toLocaleString()}</dd></dl></section>`;
+      <dt>무게중심</dt><dd>${fmt(mp.c.x)}, ${fmt(mp.c.y)}, ${fmt(mp.c.z)}</dd><dt>삼각형</dt><dd>${triCount(b.geom).toLocaleString()}</dd></dl><div class="row" style="margin-top:10px"><button class="btn danger" data-cmd="delete">바디 지우기 (Delete)</button></div></section>`;
   }
   if (measure.on) {
     let m = '모델 표면의 두 점을 클릭하세요';
@@ -775,7 +917,7 @@ function renderPanel() {
     <label for="vSec">단면</label><select id="vSec">${opts([['off', '끄기'], ['x', 'X 방향'], ['y', 'Y 방향'], ['z', 'Z 방향']], view.section ? view.secAxis : 'off')}</select></div>
     ${view.section ? `<input type="range" id="vSecPos" min="${box.min[ax] - 1}" max="${box.max[ax] + 1}" step="0.1" value="${view.secPos}" style="width:100%;margin-top:8px" aria-label="단면 위치"><p class="hint">단면 위치 ${fmt(view.secPos)} mm</p>` : ''}
     </section>`;
-  h += `<section><h2>도움말</h2><div class="keys"><b>왼쪽 끌기</b><span>회전</span><b>오른쪽 끌기</b><span>이동</span><b>휠</b><span>확대·축소</span><b>E</b><span>돌출</span><b>Ctrl+Z/Y</b><span>실행 취소/다시</span><b>Esc</b><span>취소</span></div>
+  h += `<section><h2>도움말</h2><div class="keys"><b>왼쪽 끌기</b><span>회전</span><b>오른쪽 끌기</b><span>이동</span><b>휠</b><span>확대·축소</span><b>E</b><span>돌출</span><b>Delete</b><span>선택한 바디 지우기</span><b>Ctrl+Z/Y</b><span>실행 취소/다시</span><b>Esc</b><span>취소</span></div>
     <p class="hint" style="margin-top:8px">타임라인의 피처를 누르면 값을 고칠 수 있고, 스케치를 바꾸면 모델이 다시 계산됩니다.</p></section>`;
   panel.innerHTML = h;
 }
@@ -799,7 +941,7 @@ function startFeature(type) {
   if (type === 'extrude' || type === 'revolve') {
     if (!view.sketch) { view.sketch = true; }
   }
-  if ((type === 'boolean' || type === 'move' || type === 'pattern' || type === 'mirror' || type === 'split' || type === 'fillet3d' || type === 'chamfer3d') && !bodies.length) { flash('먼저 바디를 만드세요 — 돌출이나 상자부터 시작합니다'); return; }
+  if ((type === 'boolean' || type === 'move' || type === 'pattern' || type === 'mirror' || type === 'split' || type === 'fillet3d' || type === 'chamfer3d' || type === 'shell') && !bodies.length) { flash('먼저 바디를 만드세요 — 돌출이나 상자부터 시작합니다'); return; }
   if (selBody) { if ('body' in f) f.body = selBody; if (type === 'boolean') f.target = selBody; }
   const last = bodies.length ? bodies[bodies.length - 1].id : '';
   if ('body' in f && !f.body) f.body = last;
@@ -825,6 +967,15 @@ function cancelEdit(re = true) { editing = null; if (re) regen(); }
 function deleteFeature() {
   if (!editing || editing.isNew) return;
   checkpoint(); state.features = state.features.filter(x => x.id !== editing.feat.id); editing = null; persist(); regen();
+}
+function deleteBody() {
+  if (editing) { flash('먼저 편집 중인 피처를 확인하거나 취소하세요'); return; }
+  const b = selBody && findBody(selBody);
+  if (!b) { flash('지울 바디를 먼저 클릭해서 고르세요'); return; }
+  checkpoint();
+  state.features.push({ id: state.nextFid++, type: 'remove', body: b.id });
+  selBody = null; persist(); regen();
+  flash(`${b.name}을(를) 지웠습니다 — Ctrl+Z로 되돌리거나 타임라인의 지우기 피처를 삭제하면 돌아옵니다`);
 }
 function measureOff() { if (measure.on) { measure.on = false; measure.pts = []; syncToolButtons(); rebuildMeasure(); } }
 function flash(msg) { const el = $('#flash3d'); if (!el) return; el.textContent = msg; el.hidden = false; clearTimeout(flash.t); flash.t = setTimeout(() => el.hidden = true, 2800); }
@@ -856,6 +1007,7 @@ panel.addEventListener('change', ev => {
     if (t.dataset.k) {
       editing.feat[t.dataset.k] = t.type === 'checkbox' ? t.checked : t.tagName === 'SELECT' ? t.value : (isFinite(+t.value) ? +t.value : t.value);
       if (t.dataset.k === 'body' && editing.feat.edges) editing.feat.edges = [];
+      if (t.dataset.k === 'body' && editing.feat.faces) editing.feat.faces = [];
       regen(); if (t.dataset.rerender || t.dataset.k === 'target') renderDialog(); return;
     }
     return;
@@ -872,7 +1024,9 @@ panel.addEventListener('click', ev => {
   if (t.id === 'dlgOk') { clearTimeout(panel._t); regen(); commitEdit(); return; }
   if (t.id === 'dlgCancel') { cancelEdit(); return; }
   if (t.id === 'dlgDel') { deleteFeature(); return; }
+  if (t.dataset.cmd === 'delete') { deleteBody(); return; }
   if (t.id === 'edgeClear' && editing) { editing.feat.edges = []; regen(); return; }
+  if (t.id === 'faceClear' && editing) { editing.feat.faces = []; regen(); return; }
   if (t.dataset.eye) {
     if (t.dataset.eye === 'sketch') view.sketch = !view.sketch;
     else { const p = (state.props[t.dataset.eye] ||= {}); p.hidden = !p.hidden; }
@@ -892,6 +1046,7 @@ function command(c) {
     case 'top': case 'front': case 'right': case 'iso': return setView(VIEWS[c]);
     case 'measure': measure.on = !measure.on; measure.pts = []; syncToolButtons(); rebuildMeasure(); draw(); if (!editing) renderPanel(); return;
     case 'stl': case 'obj': return exportMesh(c);
+    case 'delete': return deleteBody();
   }
 }
 
@@ -905,6 +1060,19 @@ renderer.domElement.addEventListener('pointerup', e => {
   const r = renderer.domElement.getBoundingClientRect();
   ndc.set((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1);
   ray.setFromCamera(ndc, camera);
+  if (editing && pickMesh && editing.feat.type === 'shell') {
+    const hit = ray.intersectObject(pickMesh, false)[0]; if (!hit) return;
+    const n = hit.face.normal.clone().normalize(), p = hit.point, sc = geomScale(pickGeom), tp = Math.max(0.01, sc * 1e-4);
+    const at = editing.feat.faces.findIndex(fc => { const o = faceOf(fc); return o.n.dot(n) > 0.9999 && Math.abs(o.n.dot(V3().subVectors(p, o.p))) < tp; });
+    if (at >= 0) editing.feat.faces.splice(at, 1);
+    else {
+      const patch = facePatch(pickGeom, [p.x, p.y, p.z, n.x, n.y, n.z], sc);
+      let area = 0; for (let i = 0; i < patch.length; i += 9) area += new THREE.Triangle(V3(...patch.slice(i, i + 3)), V3(...patch.slice(i + 3, i + 6)), V3(...patch.slice(i + 6, i + 9))).getArea();
+      if (area < massProps(pickGeom).A * 0.015) { flash('곡면이나 너무 작은 면은 열 수 없습니다 — 평평한 면을 고르세요'); return; }
+      editing.feat.faces.push([p.x, p.y, p.z, n.x, n.y, n.z].map(v => +v.toFixed(5)));
+    }
+    regen(); return;
+  }
   if (editing && pickLines && (editing.feat.type === 'fillet3d' || editing.feat.type === 'chamfer3d')) {
     ray.params.Line.threshold = camera.position.distanceTo(controls.target) * 0.012;
     const hit = ray.intersectObject(pickLines, false)[0]; if (!hit) return;
@@ -944,6 +1112,7 @@ addEventListener('keydown', e => {
   if (mod) return;
   if (e.key === 'Escape') { if (editing) cancelEdit(); else if (measure.on) { measureOff(); renderPanel(); } else if (selBody) { selBody = null; rebuildScene(); renderPanel(); } return; }
   if (e.key === 'Enter' && editing) { commitEdit(); return; }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && !editing) { e.preventDefault(); deleteBody(); return; }
   if (k === 'e') startFeature('extrude');
   else if (k === 'f') setView();
   else if (k === 'm') command('measure');
@@ -959,9 +1128,6 @@ window.Draftline3D = {
   setState(s) { checkpoint(); state = s && Array.isArray(s.features) ? sanitizeState(s) : { features: [], nextFid: 1, props: {} }; editing = null; selBody = null; persist(); regen(); setView(VIEWS.iso); },
   // 테스트·자동화용
   _debug: () => ({ bodies: bodies.map(b => ({ id: b.id, name: b.name, tris: triCount(b.geom), ...(p => ({ V: p.V, A: p.A }))(massProps(b.geom)) })), errors: { ...errors }, regions: regions.map(r => ({ key: r.key, holes: r.holes.length, area: r.area })) }),
-  _edge(bid, m) { const b = findBody(bid); const segs = edgeSegs(b.geom); const sc = geomScale(b.geom); const M0 = V3(...m);
-    const near = segs.map(s => { const l = new THREE.Line3(s[0], s[1]); const c = V3(); l.closestPointToPoint(M0, true, c); return { s, d: c.distanceTo(M0) }; }).sort((a, b) => a.d - b.d).slice(0, 4).map(x => [x.d.toFixed(4), x.s.map(p => p.toArray().map(v => +v.toFixed(3)))]);
-    let r; try { r = resolveEdge(b.geom, segs, m, sc); } catch (e) { r = e.message; } return { type: r && r.type, key: r && r.key, R: r && r.R, nsegs: segs.length }; },
   _start: startFeature, _set(k, v) { if (editing) { editing.feat[k] = v; regen(); } }, _commit: commitEdit,
 };
 
