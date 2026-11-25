@@ -16,8 +16,8 @@ const fmt = v => { const r = Math.round(v * 100) / 100; return String(Object.is(
 const host = $('#view3d'), panel = $('#panel3d'), tl = $('#timeline');
 
 // ---------------------------------------------------------------- 상태
-const NAMES = { extrude: '돌출', revolve: '회전', box: '상자', cylinder: '원통', sphere: '구', cone: '원뿔', torus: '토러스', boolean: '결합', move: '이동', pattern: '패턴', mirror: '대칭', split: '분할', fillet3d: '모깎기', chamfer3d: '모따기', shell: '쉘', remove: '지우기' };
-const ICON = { extrude: '⬆', revolve: '↻', box: '▣', cylinder: '◎', sphere: '●', cone: '▲', torus: '◯', boolean: '⊕', move: '✥', pattern: '⁞', mirror: '⇋', split: '⫽', fillet3d: '◜', chamfer3d: '◸', shell: '▢', remove: '✕' };
+const NAMES = { extrude: '돌출', revolve: '회전', box: '상자', cylinder: '원통', sphere: '구', cone: '원뿔', torus: '토러스', boolean: '결합', move: '이동', pattern: '패턴', mirror: '대칭', split: '분할', fillet3d: '모깎기', chamfer3d: '모따기', shell: '쉘', remove: '지우기', wedge: '쐐기', pyramid: '피라미드', tube: '튜브', hemisphere: '반구', place: '배치', copy: '복제', group: '그룹' };
+const ICON = { extrude: '⬆', revolve: '↻', box: '▣', cylinder: '◎', sphere: '●', cone: '▲', torus: '◯', boolean: '⊕', move: '✥', pattern: '⁞', mirror: '⇋', split: '⫽', fillet3d: '◜', chamfer3d: '◸', shell: '▢', remove: '✕', wedge: '◺', pyramid: '△', tube: '⊚', hemisphere: '◓', place: '✥', copy: '⧉', group: '⊞' };
 const DEFAULTS = {
   extrude: { profiles: [], plane: 'XY', offset: 0, distance: 20, dir: 'one', op: 'new', target: '' },
   revolve: { profiles: [], plane: 'XY', offset: 0, axis: 'X', angle: 360, op: 'new', target: '' },
@@ -33,9 +33,17 @@ const DEFAULTS = {
   split: { body: '', plane: 'XY', offset: 10 },
   fillet3d: { body: '', edges: [], r: 3 },
   chamfer3d: { body: '', edges: [], d: 2 },
-  shell: { body: '', t: 2, faces: [] },
+  shell: { body: '', t: 2, faces: [], dir: 'in' },
   remove: { body: '' },
+  wedge: { w: 30, d: 20, h: 20, x: 0, y: 0, z: 0, op: 'new', target: '' },
+  pyramid: { w: 30, h: 25, x: 0, y: 0, z: 0, op: 'new', target: '' },
+  tube: { r: 15, r2: 10, h: 20, x: 0, y: 0, z: 0, op: 'new', target: '' },
+  hemisphere: { r: 15, x: 0, y: 0, z: 0, op: 'new', target: '' },
+  place: { moves: {} },
+  copy: { body: '', dx: 10, dy: 10, dz: 0 },
+  group: { target: '', solids: [], holes: [] },
 };
+const PRIMS = ['box', 'cylinder', 'sphere', 'cone', 'torus', 'wedge', 'pyramid', 'tube', 'hemisphere'];
 const MATERIALS = [['steel', '강철', 7.85], ['al', '알루미늄', 2.70], ['brass', '황동', 8.50], ['abs', 'ABS', 1.04], ['pla', 'PLA', 1.24], ['wood', '나무', 0.60]];
 const BODY_COLORS = ['#9aa9b5', '#c9773f', '#5b8fc7', '#6aa36f', '#c8a64a', '#8e6fc1'];
 
@@ -47,9 +55,11 @@ let beforeIds = {};          // fid → 그 피처 직전의 바디 목록
 let draftTool = null;        // 편집 중인 잘라내기/교차 도구 형상 (미리보기)
 let pickGeom = null, pickSegs = [], draftEdges = [], pickLines = null, draftFaces = [], pickMesh = null; // 모깎기·모따기 모서리 고르기
 let editing = null;          // {feat, isNew}
-let selBody = null;
+let selBody = null, selSet = new Set();
+function selectOnly(id) { selBody = id || null; selSet = new Set(id ? [id] : []); }
+function toggleSel(id) { if (selSet.has(id)) { selSet.delete(id); if (selBody === id) selBody = [...selSet].pop() || null; } else { selSet.add(id); selBody = id; } }
 let regions = [], regionsByKey = new Map(), sketchLinesCache = [];
-let view = { display: 'edges', sketch: true, section: false, secAxis: 'z', secPos: 0 };
+let view = { display: 'edges', sketch: true, section: false, secAxis: 'z', secPos: 0, snap: 1 };
 let measure = { on: false, pts: [] };
 let dirty = true;
 let memo = [];
@@ -70,7 +80,7 @@ function sanitizeState(d) {
   return { features: feats, nextFid, props: d.props && typeof d.props === 'object' ? d.props : {} };
 }
 function persist() {
-  try { localStorage.setItem(KEY, JSON.stringify(state)); localStorage.setItem(KEY + '.view', JSON.stringify({ display: view.display, sketch: view.sketch })); } catch (_) {}
+  try { localStorage.setItem(KEY, JSON.stringify(state)); localStorage.setItem(KEY + '.view', JSON.stringify({ display: view.display, sketch: view.sketch, snap: view.snap })); } catch (_) {}
 }
 function checkpoint() { undoS.push(JSON.stringify(state)); if (undoS.length > 100) undoS.shift(); redoS = []; }
 function undo() { if (!undoS.length) return; redoS.push(JSON.stringify(state)); state = JSON.parse(undoS.pop()); editing = null; persist(); regen(); renderPanel(); }
@@ -166,7 +176,10 @@ function prep(g) {
   for (let i = 0; i < a.length; i += 9) {
     const ux = a[i + 3] - a[i], uy = a[i + 4] - a[i + 1], uz = a[i + 5] - a[i + 2], vx = a[i + 6] - a[i], vy = a[i + 7] - a[i + 1], vz = a[i + 8] - a[i + 2];
     const cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
-    if (cx * cx + cy * cy + cz * cz < 1e-16) continue;
+    const c2 = cx * cx + cy * cy + cz * cz; if (c2 < 1e-16) continue;
+    // 바늘처럼 가는 조각(폭 0.00005 mm 미만)도 버림: 모양엔 영향이 없고, 불리언 결과의 삼각형 폭증을 막음
+    const l2 = Math.max(ux * ux + uy * uy + uz * uz, vx * vx + vy * vy + vz * vz, (vx - ux) ** 2 + (vy - uy) ** 2 + (vz - uz) ** 2);
+    if (c2 < 2.5e-9 * l2) continue;
     if (w !== i) for (let k = 0; k < 9; k++) a[w + k] = a[i + k];
     w += 9;
   }
@@ -267,6 +280,14 @@ function toolGeom(f, ents) {
     case 'sphere': g = new THREE.SphereGeometry(num('r', 0), 64, 32); g.translate(+f.x, +f.y, +f.z); break;
     case 'cone': { const r1 = num('r1', -1e-9), r2 = num('r2', -1e-9); if (r1 <= 0 && r2 <= 0) throw new Error('반지름 하나는 0보다 커야 합니다'); g = new THREE.CylinderGeometry(r2, r1, num('h', 0), 96); g.rotateX(Math.PI / 2); g.translate(+f.x, +f.y, +f.z + f.h / 2); break; }
     case 'torus': { const R = num('R', 0), r = num('r', 0); if (r >= R) throw new Error('관 반지름은 중심 반지름보다 작아야 합니다'); g = new THREE.TorusGeometry(R, r, 32, 96); g.translate(+f.x, +f.y, +f.z); break; }
+    case 'wedge': { const w = num('w', 0), d = num('d', 0), h = num('h', 0); g = new THREE.ExtrudeGeometry(new THREE.Shape([V2(0, 0), V2(w, 0), V2(0, h)]), { depth: d, bevelEnabled: false });
+      g.applyMatrix4(PLANES.XZ); g.translate(+f.x - w / 2, +f.y + d / 2, +f.z); break; }
+    case 'pyramid': { const w = num('w', 0), h = num('h', 0); g = new THREE.ConeGeometry(w / Math.SQRT2, h, 4); g.rotateY(Math.PI / 4); g.rotateX(Math.PI / 2); g.translate(+f.x, +f.y, +f.z + h / 2); break; }
+    case 'tube': { const r = num('r', 0), r2 = num('r2', 0), h = num('h', 0); if (r2 >= r) throw new Error('안쪽 반지름은 바깥 반지름보다 작아야 합니다');
+      const sh = new THREE.Shape(); sh.absarc(0, 0, r, 0, TAU, false); const hole = new THREE.Path(); hole.absarc(0, 0, r2, 0, TAU, true); sh.holes.push(hole);
+      g = new THREE.ExtrudeGeometry(sh, { depth: h, bevelEnabled: false, curveSegments: 48 }); g.translate(+f.x, +f.y, +f.z); break; }
+    case 'hemisphere': { const r = num('r', 0), pts = [V2(0, 0), V2(r, 0)]; for (let i = 1; i <= 32; i++) { const a = Math.PI / 2 * i / 32; pts.push(V2(r * Math.cos(a), r * Math.sin(a))); }
+      g = prep(new THREE.LatheGeometry(pts, 96)); g.rotateX(Math.PI / 2); if (massProps(g).V < 0) flipWinding(g); g.translate(+f.x, +f.y, +f.z); break; }
   }
   return prep(g);
 }
@@ -280,7 +301,7 @@ function targetOf(f, key = 'target') {
 }
 function runFeature(f, ents, isDraft) {
   const bid = 'b' + f.id;
-  if (['extrude', 'revolve', 'box', 'cylinder', 'sphere', 'cone', 'torus'].includes(f.type)) {
+  if (['extrude', 'revolve', ...PRIMS].includes(f.type)) {
     const g = toolGeom(f, ents);
     if (f.op === 'new' || !bodies.length) { if (f.op === 'cut' || f.op === 'intersect') { if (!bodies.length) throw new Error('잘라내거나 교차할 바디가 없습니다'); } else { const b = newBody(bid); b.geom = g; bodies.push(b); return; } }
     const t = targetOf(f);
@@ -352,14 +373,36 @@ function runFeature(f, ents, isDraft) {
     case 'remove': {
       const b = targetOf(f, 'body'); bodies = bodies.filter(x => x !== b); return;
     }
+    case 'place': {
+      for (const [id, v] of Object.entries(f.moves || {})) { const b = findBody(id); if (!b || !v || (!v[0] && !v[1] && !v[2])) continue; b.geom = transformed(b.geom, new THREE.Matrix4().makeTranslation(+v[0] || 0, +v[1] || 0, +v[2] || 0)); }
+      return;
+    }
+    case 'copy': {
+      const src = targetOf(f, 'body'), nb = newBody(bid);
+      nb.geom = transformed(src.geom, new THREE.Matrix4().makeTranslation(+f.dx || 0, +f.dy || 0, +f.dz || 0)); bodies.push(nb); return;
+    }
+    case 'group': {
+      const t = findBody(f.target); if (!t) throw new Error('기준 바디가 없습니다');
+      const sol = (f.solids || []).map(findBody).filter(b => b && b !== t), hol = (f.holes || []).map(findBody).filter(b => b && b !== t);
+      if (!sol.length && !hol.length) throw new Error('함께 묶을 바디가 없습니다');
+      for (const b of sol) t.geom = csg(t.geom, b.geom, 'join');
+      for (const b of hol) { if (isDraft) draftTool = b.geom; t.geom = csg(t.geom, b.geom, 'cut'); }
+      bodies = bodies.filter(b => !sol.includes(b) && !hol.includes(b));
+      if (!triCount(t.geom)) throw new Error('결과가 비어 있습니다 — 구멍이 바디 전체를 덮습니다');
+      return;
+    }
     case 'shell': {
       const b = targetOf(f, 'body'), base = b.geom, scale = geomScale(base), t = +f.t;
       if (isDraft) { pickGeom = base; draftFaces = f.faces.map(fc => facePatch(base, fc, scale)); }
       if (!(t > 0)) throw new Error('두께는 0보다 커야 합니다');
-      const inner = shellInner(base, t, f.faces, scale);
-      const vo = massProps(base).V, vi = massProps(inner).V;
-      if (!(vi > 0) || (vi >= vo && !f.faces.length)) throw new Error('두께가 너무 두꺼워 안쪽 형상이 뒤집혔습니다 — 두께를 줄이세요');
-      const g = csg(base, inner, 'cut');
+      const dir = f.dir || 'in';
+      let outer = base, inner;
+      if (dir === 'out') { outer = offsetMesh(base, t, f.faces, scale, 'flush'); inner = f.faces.length ? offsetMesh(base, 0, f.faces, scale, 'push') : base; }
+      else if (dir === 'both') { outer = offsetMesh(base, t / 2, f.faces, scale, 'flush'); inner = offsetMesh(base, -t / 2, f.faces, scale, 'push'); }
+      else inner = offsetMesh(base, -t, f.faces, scale, 'push');
+      const vo = massProps(outer).V, vi = massProps(inner).V;
+      if (!(vi > 0) || !(vo > 0) || (vi >= vo && !f.faces.length)) throw new Error('두께가 너무 두꺼워 형상이 뒤집혔습니다 — 두께를 줄이세요');
+      const g = csg(outer, inner, 'cut');
       if (!triCount(g)) throw new Error('결과가 비어 있습니다 — 두께를 줄이세요');
       if (Math.abs(massProps(g).V - vo) < vo * 1e-6) throw new Error('속을 비우지 못했습니다 — 두께를 줄이거나 열 면을 다시 고르세요');
       b.geom = g; return;
@@ -384,9 +427,13 @@ function triGrid(g, scale) {
   return { tris, at: P => grid.get(Math.floor(P.x / cell) + ',' + Math.floor(P.y / cell) + ',' + Math.floor(P.z / cell)) || [] };
 }
 const faceOf = fc => ({ p: V3(fc[0], fc[1], fc[2]), n: V3(fc[3], fc[4], fc[5]).normalize() });
-function shellInner(g, t, faces, scale) {
+function shellInner(g, t, faces, scale) { return offsetMesh(g, -t, faces, scale, 'push'); }
+// 표면을 s만큼(+ 바깥, - 안쪽) 옮긴 형상. 열 면은 'push'면 바깥으로 밀어 뚫고, 'flush'면 원래 평면에 그대로 둠
+function offsetMesh(g, s, faces, scale, mode) {
+  const t = Math.max(Math.abs(s), 1e-3);
   const a = g.attributes.position.array, { tris, at } = triGrid(g, scale), tol = Math.max(0.03, scale * 3e-4), tp = Math.max(0.01, scale * 1e-4);
   const open = faces.map(faceOf), ext = t + Math.max(1, scale * 0.02);
+  if (Math.abs(s) < 1e-9 && !open.length) return g.clone();
   const K = (x, y, z) => Math.round(x * 1e4) + ',' + Math.round(y * 1e4) + ',' + Math.round(z * 1e4);
   const disp = new Map(), P = V3(), cp = V3();
   // 실제 모서리와 그 양쪽 면 방향 (모서리 가까이 있는 면 안쪽 점이 오프셋 후 접혀 넘어가지 않도록)
@@ -409,6 +456,8 @@ function shellInner(g, t, faces, scale) {
       const T = tris[ti]; T.tri.closestPointToPoint(P, cp); if (cp.distanceToSquared(P) > tol * tol) continue;
       const c = cl.find(c => c.n.dot(T.n) > 0.9999); if (c) c.w += T.area; else cl.push({ n: T.n, w: T.area });
     }
+    // 뒤집힌 조각 삼각형 때문에 정반대 법선이 함께 모이면 넓이가 작은 쪽을 버림 (서로 상쇄돼 점이 안 움직이는 것 방지)
+    for (let i = cl.length - 1; i >= 0; i--) if (cl.some(c => c !== cl[i] && c.n.dot(cl[i].n) < -0.99 && c.w >= cl[i].w)) cl.splice(i, 1);
     // 면 하나에만 놓인 점이 같은 면의 모서리에서 두께 안쪽에 있으면, 그 모서리의 다른 면 방향도 따름
     if (cl.length === 1) {
       const n0 = cl[0].n, w0 = cl[0].w;
@@ -426,11 +475,13 @@ function shellInner(g, t, faces, scale) {
     for (const { n, w: w0 } of cl) {
       const w = Math.min(1, w0 / wmax * 20), e = M.elements;
       e[0] += w * n.x * n.x; e[1] += w * n.x * n.y; e[2] += w * n.x * n.z; e[3] += w * n.y * n.x; e[4] += w * n.y * n.y; e[5] += w * n.y * n.z; e[6] += w * n.z * n.x; e[7] += w * n.z * n.y; e[8] += w * n.z * n.z;
-      rhs.addScaledVector(n, -t * w); avg.addScaledVector(n, w0);
+      rhs.addScaledVector(n, s * w); avg.addScaledVector(n, w0);
     }
     let d = cl.length ? rhs.applyMatrix3(M.invert()) : V3();
-    if (d.length() > 2.5 * t && avg.length() > 1e-12) d = avg.normalize().multiplyScalar(-t);
-    for (const o of open) if (ns.some(n => o.n.dot(n) > 0.9999) && Math.abs(o.n.dot(V3().subVectors(P, o.p))) < tp) d.addScaledVector(o.n, ext + t);
+    if (d.length() > 2.5 * Math.abs(s) && avg.length() > 1e-12) d = avg.normalize().multiplyScalar(s);
+    for (const o of open) if (ns.some(n => o.n.dot(n) > 0.9999) && Math.abs(o.n.dot(V3().subVectors(P, o.p))) < tp) {
+      if (mode === 'flush') d.addScaledVector(o.n, -o.n.dot(d)); else d.addScaledVector(o.n, ext + Math.max(0, -s));
+    }
     disp.set(k, d);
   }
   const out = [], A = V3(), B = V3(), C = V3(), mv = i => { const d = disp.get(K(a[i], a[i + 1], a[i + 2])); return V3(a[i] + d.x, a[i + 1] + d.y, a[i + 2] + d.z); };
@@ -466,7 +517,10 @@ function edgeSegs(g, th = 20) {
   const R3 = v => Math.round(v * 1e3), R2 = v => Math.round(v * 1e2);
   for (let i = 0; i < a.length; i += 9) {
     p.set(a[i], a[i + 1], a[i + 2]); q.set(a[i + 3], a[i + 4], a[i + 5]); r.set(a[i + 6], a[i + 7], a[i + 8]);
-    n.subVectors(q, p).cross(t.subVectors(r, p)); if (n.lengthSq() < 1e-14) continue; n.normalize();
+    n.subVectors(q, p).cross(t.subVectors(r, p)); const n2 = n.lengthSq(); if (n2 < 1e-14) continue;
+    // 아주 가는 조각 삼각형: 법선이 불안정하므로 모서리 판단에 쓰지 않음
+    const lmax = Math.max(p.distanceToSquared(q), q.distanceToSquared(r), r.distanceToSquared(p)), sl = Math.sqrt(n2 / lmax) < 0.02;
+    n.normalize();
     for (const [A, B] of [[p, q], [q, r], [r, p]]) {
       const d = V3().subVectors(B, A), L = d.length(); if (L < 1e-7) continue; d.multiplyScalar(1 / L);
       if (d.x < -1e-9 || (Math.abs(d.x) <= 1e-9 && (d.y < -1e-9 || (Math.abs(d.y) <= 1e-9 && d.z < 0)))) d.negate();
@@ -474,31 +528,46 @@ function edgeSegs(g, th = 20) {
       const ki = [R3(d.x), R3(d.y), R3(d.z), R2(perp.x), R2(perp.y), R2(perp.z)], key = ki.join(',');
       const t0 = A.dot(d), t1 = B.dot(d);
       let gr = groups.get(key); if (!gr) groups.set(key, gr = []);
-      gr.push({ t0: Math.min(t0, t1), t1: Math.max(t0, t1), n: n.clone(), A: A.clone(), B: B.clone(), ki, d: d.clone() });
+      gr.push({ t0: Math.min(t0, t1), t1: Math.max(t0, t1), n: n.clone(), A: A.clone(), B: B.clone(), ki, d: d.clone(), sl });
     }
   }
-  const check = (E, list, cmpT) => {
-    let partner = false;
-    for (const O of list) {
-      if (O === E) continue;
-      const o0 = cmpT ? O.t0 : Math.min(O.A.dot(E.d), O.B.dot(E.d)), o1 = cmpT ? O.t1 : Math.max(O.A.dot(E.d), O.B.dot(E.d));
-      if (o1 <= E.t0 + 1e-5 || o0 >= E.t1 - 1e-5) continue;
-      partner = true; if (E.n.dot(O.n) < cosT) return 'sharp';
-    }
-    return partner ? 'smooth' : 'none';
-  };
+  // 겹치는 선분들의 끝점으로 E를 잘게 나눠 조각마다 판단 (한 직선 위에 진짜 모서리와 면 안쪽 선이 이어진 경우 대응)
   const OFF = [-1, 0, 1];
+  let tg = null; g.computeBoundingBox(); const sc = g.boundingBox.getSize(V3(0, 0, 0)).length();
+  const overl = (E, list) => list.filter(O => O !== E).map(O => { const a = O.A.dot(E.d), b = O.B.dot(E.d); return { O, o0: Math.min(a, b), o1: Math.max(a, b) }; }).filter(x => x.o1 > E.t0 + 1e-5 && x.o0 < E.t1 - 1e-5);
   for (const gr of groups.values()) for (const E of gr) {
-    let res = check(E, gr, true);
-    if (res === 'none') {
+    if (E.sl) continue;
+    let ov = overl(E, gr);
+    if (!ov.length) {
       // 반올림 경계에 걸린 이웃 칸까지 찾아봄
-      search: for (const a of OFF) for (const b of OFF) for (const c of OFF) for (const x of OFF) for (const y of OFF) for (const z of OFF) {
+      for (const a of OFF) for (const b of OFF) for (const c of OFF) for (const x of OFF) for (const y of OFF) for (const z of OFF) {
         if (!a && !b && !c && !x && !y && !z) continue;
-        const k = E.ki; const o = groups.get(`${k[0] + a},${k[1] + b},${k[2] + c},${k[3] + x},${k[4] + y},${k[5] + z}`); if (!o) continue;
-        const r2 = check(E, o, false); if (r2 !== 'none') { res = r2; if (r2 === 'sharp') break search; }
+        const k = E.ki, o = groups.get(`${k[0] + a},${k[1] + b},${k[2] + c},${k[3] + x},${k[4] + y},${k[5] + z}`); if (o) ov.push(...overl(E, o));
       }
     }
-    if (res !== 'smooth') out.push([E.A, E.B]);
+    const cuts = [E.t0, E.t1]; for (const x of ov) { if (x.o0 > E.t0 && x.o0 < E.t1) cuts.push(x.o0); if (x.o1 > E.t0 && x.o1 < E.t1) cuts.push(x.o1); }
+    cuts.sort((u, v) => u - v);
+    const base = E.A.dot(E.d), at = t => E.A.clone().addScaledVector(E.d, t - base);
+    let runStart = null;
+    const flush = t => { if (runStart !== null) { out.push([at(runStart), at(t)]); runStart = null; } };
+    for (let i = 0; i + 1 < cuts.length; i++) {
+      const u = cuts[i], v = cuts[i + 1]; if (v - u < 1e-6) continue;
+      const m = (u + v) / 2, here = ov.filter(x => x.o0 <= m && x.o1 >= m).map(x => x.O);
+      let draw;
+      if (!here.length) {
+        // 짝이 없는 조각: 양옆이 같은 평면의 삼각형으로 덮여 있으면 평평한 면 안쪽 선
+        if (!tg) tg = triGrid(g, Math.max(1, sc));
+        const M = at(m), w = V3().crossVectors(E.n, E.d).normalize(), cp = V3();
+        const covered = side => { const Q = M.clone().addScaledVector(w, side * 0.01); return tg.at(Q).some(ti => { const T = tg.tris[ti]; if (Math.abs(T.n.dot(E.n)) < 0.999) return false; T.tri.closestPointToPoint(Q, cp); return cp.distanceToSquared(Q) < 1e-6; }); };
+        draw = !(covered(1) && covered(-1));
+      } else {
+        // 등을 맞댄 한 쌍(반대 방향 법선)은 부피 없는 내부 벽이므로 무시
+        const real = here.filter(O => !O.sl && !here.some(Q => Q !== O && Q.n.dot(O.n) < -0.999));
+        draw = real.some(O => Math.abs(E.n.dot(O.n)) < cosT);
+      }
+      if (draw) { if (runStart === null) runStart = u; } else flush(u);
+    }
+    flush(cuts[cuts.length - 1]);
   }
   edgeCache.set(g, { th, segs: out });
   return out;
@@ -632,7 +701,7 @@ function regen() {
   regions = sketchRegions(ents); regionsByKey = new Map(regions.map(r => [r.key, r]));
   bodies = []; errors = {}; beforeIds = {}; bodyCounter = 0; draftTool = null; pickGeom = null; pickSegs = []; draftEdges = []; draftFaces = [];
   // 바뀌지 않은 앞쪽 피처는 저장해 둔 결과를 다시 씀 (서명 = 스케치 + 이름 + 지금까지의 피처)
-  let sig = hashStr(JSON.stringify(ents) + '|' + JSON.stringify(state.props));
+  let sig = hashStr(JSON.stringify(ents) + '|' + JSON.stringify(Object.entries(state.props).map(([k, v]) => [k, v && v.name])));
   const list = featureList(), nextMemo = [];
   list.forEach((f, i) => {
     beforeIds[f.id] = bodies.map(b => ({ id: b.id, name: b.name }));
@@ -651,7 +720,7 @@ function regen() {
     nextMemo.push(isDraft ? null : { sig, bodies: bodies.map(b => ({ ...b })), counter: bodyCounter, err: errors[f.id] });
   });
   memo = nextMemo;
-  if (selBody && !findBody(selBody)) selBody = null;
+  selSet = new Set([...selSet].filter(id => findBody(id))); if (selBody && !findBody(selBody)) selBody = [...selSet].pop() || null;
   dirty = false;
   rebuildScene(); renderTimeline();
   if (editing) updateDlgStatus(); else renderPanel();
@@ -694,10 +763,10 @@ function rebuildScene() {
   const xray = view.display === 'xray', wire = view.display === 'wire';
   bodies.forEach((b, i) => {
     if (state.props[b.id] && state.props[b.id].hidden) return;
-    const sel = b.id === selBody;
+    const sel = selSet.has(b.id), hole = !!(state.props[b.id] && state.props[b.id].hole);
     const mat = new THREE.MeshStandardMaterial({
-      color: bodyColor(b, i), roughness: 0.55, metalness: 0.08, side: view.section ? THREE.DoubleSide : THREE.FrontSide,
-      transparent: xray || wire, opacity: wire ? 0.06 : xray ? 0.35 : 1, depthWrite: !(xray || wire), clippingPlanes: clip,
+      color: hole ? '#8d979f' : bodyColor(b, i), roughness: 0.55, metalness: 0.08, side: THREE.DoubleSide, // 불리언 결과에 섞인 뒤집힌 조각 삼각형도 제대로 칠함
+      transparent: xray || wire || hole, opacity: wire ? 0.06 : hole ? 0.32 : xray ? 0.35 : 1, depthWrite: !(xray || wire || hole), clippingPlanes: clip,
       polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
       emissive: sel ? new THREE.Color(T.accent) : new THREE.Color(0), emissiveIntensity: sel ? 0.28 : 0,
     });
@@ -705,7 +774,8 @@ function rebuildScene() {
     if (view.display !== 'shaded') {
       const eg = new THREE.BufferGeometry(), ep = []; for (const [a, c] of edgeSegs(b.geom, 25)) ep.push(a.x, a.y, a.z, c.x, c.y, c.z);
       eg.setAttribute('position', new THREE.Float32BufferAttribute(ep, 3));
-      gBodies.add(new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: sel ? T.accent : (wire ? T.ink : '#1e272d'), clippingPlanes: clip, transparent: true, opacity: wire ? 0.9 : 0.75 })));
+      const ls = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: sel ? T.accent : (wire || hole ? T.ink : '#1e272d'), clippingPlanes: clip, transparent: true, opacity: hole ? 0.45 : wire ? 0.9 : 0.75 }));
+      ls.userData.bidE = b.id; gBodies.add(ls);
     }
   });
   pickMesh = null;
@@ -823,6 +893,13 @@ function fieldDefs(f) {
     case 'sphere': return [N('r', '반지름'), ...pos, ...opTarget];
     case 'cone': return [N('r1', '아래 반지름'), N('r2', '위 반지름'), N('h', '높이'), ...pos, ...opTarget];
     case 'torus': return [N('R', '중심 반지름'), N('r', '관 반지름'), ...pos, ...opTarget];
+    case 'wedge': return [N('w', '폭 X'), N('d', '깊이 Y'), N('h', '높이 Z'), ...pos, ...opTarget];
+    case 'pyramid': return [N('w', '밑변'), N('h', '높이'), ...pos, ...opTarget];
+    case 'tube': return [N('r', '바깥 반지름'), N('r2', '안쪽 반지름'), N('h', '높이'), ...pos, ...opTarget];
+    case 'hemisphere': return [N('r', '반지름'), ...pos, ...opTarget];
+    case 'place': return [{ k: 'moves', t: 'moves' }];
+    case 'copy': return [{ k: 'body', l: '원본 바디', t: 'body' }, N('dx', '간격 X'), N('dy', '간격 Y'), N('dz', '간격 Z')];
+    case 'group': return [{ k: 'target', l: '기준 바디', t: 'body' }, { k: 'groupinfo', t: 'groupinfo' }];
     case 'boolean': return [{ k: 'target', l: '대상 바디', t: 'body' }, { k: 'tools', t: 'tools' }, S('op', '작업', OPLIST.slice(1)), { k: 'keep', l: '도구 바디 남기기', t: 'chk' }];
     case 'move': return [{ k: 'body', l: '바디', t: 'body' }, N('dx', '이동 X'), N('dy', '이동 Y'), N('dz', '이동 Z'), N('rx', '회전 X°'), N('ry', '회전 Y°'), N('rz', '회전 Z°')];
     case 'pattern': return [{ k: 'body', l: '바디', t: 'body' }, S('kind', '종류', [['rect', '직사각형 배열'], ['circ', '원형 배열 (Z축)']]),
@@ -831,7 +908,7 @@ function fieldDefs(f) {
     case 'split': return [{ k: 'body', l: '바디', t: 'body' }, S('plane', '분할 평면', planes), N('offset', '평면 위치')];
     case 'fillet3d': return [{ k: 'body', l: '바디', t: 'body' }, N('r', '반지름'), { k: 'edges', t: 'edges' }];
     case 'chamfer3d': return [{ k: 'body', l: '바디', t: 'body' }, N('d', '거리'), { k: 'edges', t: 'edges' }];
-    case 'shell': return [{ k: 'body', l: '바디', t: 'body' }, N('t', '벽 두께'), { k: 'faces', t: 'faces' }];
+    case 'shell': return [{ k: 'body', l: '바디', t: 'body' }, N('t', '벽 두께'), S('dir', '방향', [['in', '안쪽 (바깥 크기 유지)'], ['out', '바깥쪽 (안쪽 크기 유지)'], ['both', '양쪽 (반반)']]), { k: 'faces', t: 'faces' }];
     case 'remove': return [{ k: 'body', l: '지울 바디', t: 'body' }];
   }
   return [];
@@ -854,6 +931,16 @@ function renderDialog() {
       const list = before.filter(b => b.id !== f.target);
       h += list.length ? list.map(b => `<label class="prow"><input type="checkbox" data-tool="${esc(b.id)}" ${f.tools.includes(b.id) ? 'checked' : ''}> ${esc(b.name)}</label>`).join('') : '<p class="hint">다른 바디가 없습니다</p>';
       h += `</div><div class="fields" style="margin-top:8px">`;
+    }
+    else if (d.t === 'moves') {
+      const ids = Object.keys(f.moves || {});
+      h += `</div><p class="hint" style="margin:10px 0 6px">화면에서 끌거나 방향키로 옮긴 거리입니다 (mm).</p><div class="fields" style="grid-template-columns:auto repeat(3,minmax(0,1fr))">`;
+      for (const id of ids) { const nm = (before.find(b => b.id === id) || {}).name || id; h += `<label>${esc(nm)}</label>` + [0, 1, 2].map(i => `<input data-mv="${esc(id)}:${i}" inputmode="decimal" aria-label="${esc(nm)} ${'XYZ'[i]}" value="${fmt(f.moves[id][i])}">`).join(''); }
+      h += `</div><div class="fields" style="margin-top:8px">`;
+    }
+    else if (d.t === 'groupinfo') {
+      const nm = id => (before.find(b => b.id === id) || {}).name || id;
+      h += `</div><p class="hint" style="margin:10px 0 0">솔리드: ${(f.solids || []).map(nm).map(esc).join(', ') || '없음'}<br>구멍: ${(f.holes || []).map(nm).map(esc).join(', ') || '없음'}</p><div class="fields">`;
     }
     else if (d.t === 'faces') {
       h += `</div><p class="hint" style="margin:10px 0 6px">열 면 <b id="faceCount">${f.faces.length}</b>개 — 화면에서 평평한 면을 클릭해 고르거나 다시 눌러 빼세요. 고르지 않으면 속이 빈 닫힌 바디가 됩니다. 안을 보려면 표시를 반투명으로 바꾸거나 단면을 켜세요.</p><div class="row"><button class="btn" id="faceClear">열 면 모두 빼기</button></div><div class="fields" style="margin-top:8px">`;
@@ -887,16 +974,31 @@ function updateDlgStatus() {
 }
 function renderPanel() {
   if (editing) { renderDialog(); return; }
-  let h = `<section><h2>브라우저</h2><div class="plist">`;
+  let h = `<section><h2>도형</h2><div class="shapes"><button class="shape" draggable="true" data-shape="box" title="상자 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M3 7l7-4 7 4v7l-7 4-7-4z"/><path d="M3 7l7 4 7-4M10 11v7"/></svg><span>상자</span></button><button class="shape" draggable="true" data-shape="cylinder" title="원통 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="5" rx="6" ry="2.2"/><path d="M4 5v10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2V5"/></svg><span>원통</span></button><button class="shape" draggable="true" data-shape="sphere" title="구 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><ellipse cx="10" cy="10" rx="7" ry="2.5"/></svg><span>구</span></button><button class="shape" draggable="true" data-shape="cone" title="원뿔 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M10 3L4 15M10 3l6 12"/><ellipse cx="10" cy="15" rx="6" ry="2"/></svg><span>원뿔</span></button><button class="shape" draggable="true" data-shape="torus" title="토러스 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="10" rx="7.5" ry="4.5"/><ellipse cx="10" cy="9.5" rx="3" ry="1.4"/></svg><span>토러스</span></button><button class="shape" draggable="true" data-shape="wedge" title="쐐기 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M3 16h14L3 5z"/><path d="M3 5l4-2 10 11"/></svg><span>쐐기</span></button><button class="shape" draggable="true" data-shape="pyramid" title="피라미드 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M10 3L3 15l7 2 7-2z"/><path d="M10 3v14"/></svg><span>피라미드</span></button><button class="shape" draggable="true" data-shape="tube" title="튜브 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="5" rx="6" ry="2.2"/><ellipse cx="10" cy="5" rx="3" ry="1.1"/><path d="M4 5v10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2V5"/></svg><span>튜브</span></button><button class="shape" draggable="true" data-shape="hemisphere" title="반구 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M3 13a7 7 0 0114 0z"/><ellipse cx="10" cy="13" rx="7" ry="2"/></svg><span>반구</span></button></div><p class="hint" style="margin-top:6px">클릭하면 화면 가운데 바닥에 놓이고, 끌어다 원하는 자리에 놓을 수도 있습니다.</p></section>`;
+  h += `<section><h2>브라우저</h2><div class="plist">`;
   h += `<div class="brow"><button class="eye" data-eye="sketch" aria-pressed="${view.sketch}" title="스케치 보이기/숨기기">${view.sketch ? '◉' : '○'}</button><span>스케치 (XY)</span><span class="muted">${regions.length}개 프로파일</span></div>`;
   bodies.forEach((b, i) => {
     const p = state.props[b.id] || {};
-    h += `<div class="brow${b.id === selBody ? ' on' : ''}" data-bid="${esc(b.id)}"><button class="eye" data-eye="${esc(b.id)}" aria-pressed="${!p.hidden}" title="보이기/숨기기">${p.hidden ? '○' : '◉'}</button><span class="dot" style="background:${esc(bodyColor(b, i))}"></span><span>${esc(b.name)}</span></div>`;
+    h += `<div class="brow${selSet.has(b.id) ? ' on' : ''}" data-bid="${esc(b.id)}"><button class="eye" data-eye="${esc(b.id)}" aria-pressed="${!p.hidden}" title="보이기/숨기기">${p.hidden ? '○' : '◉'}</button><span class="dot" style="background:${p.hole ? 'transparent' : esc(bodyColor(b, i))}${p.hole ? ';border:1px dashed var(--muted)' : ''}"></span><span>${esc(b.name)}</span>${p.hole ? '<span class="muted">구멍</span>' : ''}</div>`;
   });
   if (!bodies.length) h += `<p class="hint">아직 바디가 없습니다. 위 도구 막대에서 <b>돌출</b>이나 <b>상자</b>로 시작하세요.</p>`;
   h += `</div></section>`;
-  const b = selBody && findBody(selBody);
+  if (selSet.size > 1) {
+    const al = (ax, list) => list.map(([v, l]) => `<button class="btn" data-align="${ax}:${v}">${l}</button>`).join('');
+    h += `<section><h2>${selSet.size}개 선택</h2><div class="row"><button class="btn primary" data-cmd="group">그룹 (Ctrl+G)</button><button class="btn" data-cmd="dup">복제 (Ctrl+D)</button><button class="btn" data-cmd="drop">바닥에 (D)</button></div>
+      <p class="hint" style="margin:10px 0 4px">그룹: 솔리드는 합치고 구멍은 뺍니다 · 정렬: 선택 범위 기준</p>
+      <div class="aligns"><span>X</span>${al('x', [['min', '왼쪽'], ['mid', '가운데'], ['max', '오른쪽']])}<span>Y</span>${al('y', [['min', '앞'], ['mid', '가운데'], ['max', '뒤']])}<span>Z</span>${al('z', [['min', '아래'], ['mid', '가운데'], ['max', '위']])}</div>
+      <div class="row" style="margin-top:10px"><button class="btn danger" data-cmd="delete">지우기 (Delete)</button></div></section>`;
+  }
+  const b = selSet.size === 1 && selBody && findBody(selBody);
   if (b) {
+    const p0 = state.props[b.id] || {}, src = state.features.find(x => 'b' + x.id === b.id);
+    h += `<section><h2>${esc(b.name)}</h2><div class="segs" role="group" aria-label="솔리드 또는 구멍"><button data-hole="0" aria-pressed="${!p0.hole}">솔리드</button><button data-hole="1" aria-pressed="${!!p0.hole}">구멍 (H)</button></div>
+      <div class="row" style="margin-top:8px"><button class="btn" data-cmd="dup">복제 (Ctrl+D)</button><button class="btn" data-cmd="drop">바닥에 (D)</button>${src ? `<button class="btn" data-editf="${src.id}">피처 편집</button>` : ''}</div>`;
+    if (src && PRIMS.includes(src.type)) {
+      h += `<p class="hint" style="margin:10px 0 4px">치수 (만들 때 위치 기준)</p><div class="fields">` + fieldDefs(src).filter(d => d.t === 'num').map(d => `<label for="q-${d.k}">${d.l}</label><input id="q-${d.k}" data-qf="${d.k}" data-qid="${src.id}" inputmode="decimal" value="${esc(src[d.k])}">`).join('') + `</div>`;
+    }
+    h += `</section>`;
     const i = bodies.indexOf(b), p = state.props[b.id] || {}, mp = massProps(b.geom), sz = mp.bb.getSize(V3(0, 0, 0));
     const mat = MATERIALS.find(m => m[0] === p.mat) || MATERIALS[0];
     h += `<section><h2>${esc(b.name)}</h2><div class="fields"><label for="bName">이름</label><input id="bName" value="${esc(b.name)}">
@@ -913,11 +1015,11 @@ function renderPanel() {
     h += `<section><h2>측정</h2><p class="hint">${m}</p></section>`;
   }
   const box = sceneBox(), ax = { x: 'x', y: 'y', z: 'z' }[view.secAxis];
-  h += `<section><h2>보기</h2><div class="fields"><label for="vDisp">표시</label><select id="vDisp">${opts([['edges', '음영 + 모서리'], ['shaded', '음영'], ['xray', '반투명'], ['wire', '와이어프레임']], view.display)}</select>
+  h += `<section><h2>보기</h2><div class="fields"><label for="vSnap">그리드 스냅</label><select id="vSnap">${opts([[0.1, '0.1 mm'], [0.5, '0.5 mm'], [1, '1 mm'], [2, '2 mm'], [5, '5 mm'], [10, '10 mm']], view.snap)}</select><label for="vDisp">표시</label><select id="vDisp">${opts([['edges', '음영 + 모서리'], ['shaded', '음영'], ['xray', '반투명'], ['wire', '와이어프레임']], view.display)}</select>
     <label for="vSec">단면</label><select id="vSec">${opts([['off', '끄기'], ['x', 'X 방향'], ['y', 'Y 방향'], ['z', 'Z 방향']], view.section ? view.secAxis : 'off')}</select></div>
     ${view.section ? `<input type="range" id="vSecPos" min="${box.min[ax] - 1}" max="${box.max[ax] + 1}" step="0.1" value="${view.secPos}" style="width:100%;margin-top:8px" aria-label="단면 위치"><p class="hint">단면 위치 ${fmt(view.secPos)} mm</p>` : ''}
     </section>`;
-  h += `<section><h2>도움말</h2><div class="keys"><b>왼쪽 끌기</b><span>회전</span><b>오른쪽 끌기</b><span>이동</span><b>휠</b><span>확대·축소</span><b>E</b><span>돌출</span><b>Delete</b><span>선택한 바디 지우기</span><b>Ctrl+Z/Y</b><span>실행 취소/다시</span><b>Esc</b><span>취소</span></div>
+  h += `<section><h2>도움말</h2><div class="keys"><b>바디 끌기</b><span>바닥 위에서 옮기기</span><b>빈 곳 끌기</b><span>화면 회전</span><b>오른쪽 끌기</b><span>화면 이동</span><b>휠</b><span>확대·축소</span><b>Shift+클릭</b><span>여러 개 선택</span><b>방향키</b><span>조금씩 옮기기 (Shift ×10)</span><b>PgUp/PgDn</b><span>위아래로</span><b>D</b><span>바닥에 놓기</span><b>H</b><span>솔리드/구멍 전환</span><b>Ctrl+D/G</b><span>복제 / 그룹</span><b>Ctrl+A</b><span>모두 선택</span><b>E</b><span>돌출</span><b>Delete</b><span>선택한 바디 지우기</span><b>Ctrl+Z/Y</b><span>실행 취소/다시</span><b>Esc</b><span>취소</span></div>
     <p class="hint" style="margin-top:8px">타임라인의 피처를 누르면 값을 고칠 수 있고, 스케치를 바꾸면 모델이 다시 계산됩니다.</p></section>`;
   panel.innerHTML = h;
 }
@@ -941,8 +1043,8 @@ function startFeature(type) {
   if (type === 'extrude' || type === 'revolve') {
     if (!view.sketch) { view.sketch = true; }
   }
-  if ((type === 'boolean' || type === 'move' || type === 'pattern' || type === 'mirror' || type === 'split' || type === 'fillet3d' || type === 'chamfer3d' || type === 'shell') && !bodies.length) { flash('먼저 바디를 만드세요 — 돌출이나 상자부터 시작합니다'); return; }
-  if (selBody) { if ('body' in f) f.body = selBody; if (type === 'boolean') f.target = selBody; }
+  if ((type === 'boolean' || type === 'move' || type === 'pattern' || type === 'mirror' || type === 'split' || type === 'fillet3d' || type === 'chamfer3d' || type === 'shell' || type === 'copy') && !bodies.length) { flash('먼저 바디를 만드세요 — 돌출이나 상자부터 시작합니다'); return; }
+  if (selBody) { if ('body' in f) f.body = selBody; if (type === 'boolean') { f.target = selBody; f.tools = [...selSet].filter(x => x !== selBody); } }
   const last = bodies.length ? bodies[bodies.length - 1].id : '';
   if ('body' in f && !f.body) f.body = last;
   if ('target' in f && !f.target) f.target = last;
@@ -968,14 +1070,62 @@ function deleteFeature() {
   if (!editing || editing.isNew) return;
   checkpoint(); state.features = state.features.filter(x => x.id !== editing.feat.id); editing = null; persist(); regen();
 }
+function selected() { return [...selSet].map(findBody).filter(Boolean); }
+function needSel(min = 1) {
+  if (editing) { flash('먼저 편집 중인 피처를 확인하거나 취소하세요'); return null; }
+  const list = selected(); if (list.length < min) { flash(min > 1 ? `바디를 ${min}개 이상 고르세요 — Shift+클릭으로 여러 개 고릅니다` : '바디를 먼저 클릭해서 고르세요'); return null; }
+  return list;
+}
 function deleteBody() {
-  if (editing) { flash('먼저 편집 중인 피처를 확인하거나 취소하세요'); return; }
-  const b = selBody && findBody(selBody);
-  if (!b) { flash('지울 바디를 먼저 클릭해서 고르세요'); return; }
+  const list = needSel(); if (!list) return;
   checkpoint();
-  state.features.push({ id: state.nextFid++, type: 'remove', body: b.id });
-  selBody = null; persist(); regen();
-  flash(`${b.name}을(를) 지웠습니다 — Ctrl+Z로 되돌리거나 타임라인의 지우기 피처를 삭제하면 돌아옵니다`);
+  for (const b of list) state.features.push({ id: state.nextFid++, type: 'remove', body: b.id });
+  selectOnly(null); persist(); regen();
+  flash(`${list.map(b => b.name).join(', ')}을(를) 지웠습니다 — Ctrl+Z로 되돌리거나 타임라인의 지우기 피처를 삭제하면 돌아옵니다`);
+}
+// 끌기·방향키·정렬·바닥에 놓기는 맨 끝의 '배치' 피처 하나에 모아 기록 (타임라인이 어지럽지 않게)
+function addPlace(map) {
+  const ent = Object.entries(map).filter(([, d]) => Math.abs(d[0]) + Math.abs(d[1]) + Math.abs(d[2]) > 1e-9); if (!ent.length) return;
+  checkpoint();
+  let f = state.features[state.features.length - 1];
+  if (!f || f.type !== 'place' || f.suppressed) { f = { id: state.nextFid++, type: 'place', moves: {} }; state.features.push(f); }
+  for (const [id, d] of ent) { const v = f.moves[id] || [0, 0, 0]; f.moves[id] = v.map((x, i) => +(x + d[i]).toFixed(6)); }
+  persist(); regen();
+}
+function nudge(dx, dy, dz) { const list = needSel(); if (!list) return; const m = {}; for (const b of list) m[b.id] = [dx, dy, dz]; addPlace(m); }
+function dropToPlane() { const list = needSel(); if (!list) return; const m = {}; for (const b of list) { b.geom.computeBoundingBox(); m[b.id] = [0, 0, -b.geom.boundingBox.min.z]; } addPlace(m); }
+function alignSel(ax, where) {
+  const list = needSel(2); if (!list) return;
+  const all = new THREE.Box3(); list.forEach(b => { b.geom.computeBoundingBox(); all.union(b.geom.boundingBox); });
+  const m = {};
+  for (const b of list) { const bb = b.geom.boundingBox, d = [0, 0, 0], i = 'xyz'.indexOf(ax);
+    d[i] = where === 'min' ? all.min[ax] - bb.min[ax] : where === 'max' ? all.max[ax] - bb.max[ax] : (all.min[ax] + all.max[ax]) / 2 - (bb.min[ax] + bb.max[ax]) / 2; m[b.id] = d; }
+  addPlace(m);
+}
+function duplicateSel() {
+  const list = needSel(); if (!list) return;
+  checkpoint(); const ns = [];
+  for (const b of list) { const f = { id: state.nextFid++, type: 'copy', body: b.id, dx: 10, dy: 10, dz: 0 }; state.features.push(f); const nid = 'b' + f.id; const p = { ...(state.props[b.id] || {}) }; delete p.name; state.props[nid] = p; ns.push(nid); }
+  selSet = new Set(ns); selBody = ns[ns.length - 1]; persist(); regen();
+}
+function groupSel() {
+  const list = needSel(2); if (!list) return;
+  const isHole = b => !!(state.props[b.id] && state.props[b.id].hole);
+  const solids = list.filter(b => !isHole(b)), holes = list.filter(isHole);
+  if (!solids.length) { flash('구멍만으로는 그룹을 만들 수 없습니다 — 솔리드를 하나 이상 함께 고르세요'); return; }
+  checkpoint();
+  const t = solids[0];
+  state.features.push({ id: state.nextFid++, type: 'group', target: t.id, solids: solids.slice(1).map(b => b.id), holes: holes.map(b => b.id) });
+  selectOnly(t.id); persist(); regen();
+}
+function setHole(on) { const list = needSel(); if (!list) return; checkpoint(); for (const b of list) (state.props[b.id] ||= {}).hole = on; persist(); regen(); }
+function quickAdd(type, at) {
+  if (editing) cancelEdit(false);
+  const f = { id: state.nextFid++, type, ...clone(DEFAULTS[type]), op: 'new' };
+  const sn = v => Math.round(v / view.snap) * view.snap, c = at || controls.target;
+  f.x = +sn(c.x).toFixed(4); f.y = +sn(c.y).toFixed(4);
+  f.z = type === 'sphere' ? f.r : type === 'torus' ? f.r : 0;
+  checkpoint(); state.features.push(f); selectOnly('b' + f.id); persist(); regen();
 }
 function measureOff() { if (measure.on) { measure.on = false; measure.pts = []; syncToolButtons(); rebuildMeasure(); } }
 function flash(msg) { const el = $('#flash3d'); if (!el) return; el.textContent = msg; el.hidden = false; clearTimeout(flash.t); flash.t = setTimeout(() => el.hidden = true, 2800); }
@@ -994,6 +1144,7 @@ function exportMesh(kind) {
 panel.addEventListener('input', ev => {
   const t = ev.target;
   if (t.id === 'vSecPos') { view.secPos = +t.value; t.nextElementSibling && (t.nextElementSibling.textContent = `단면 위치 ${fmt(view.secPos)} mm`); rebuildScene(); return; }
+  if (editing && t.dataset.mv) { const [id, i] = t.dataset.mv.split(':'); const v = +t.value; if (isFinite(v)) { editing.feat.moves[id][+i] = v; clearTimeout(panel._t); panel._t = setTimeout(regen, 160); } return; }
   if (!editing || !t.dataset.k || t.tagName !== 'INPUT' || t.type === 'checkbox') return;
   editing.feat[t.dataset.k] = t.value === '' || t.value === '-' ? t.value : +t.value;
   clearTimeout(panel._t); panel._t = setTimeout(regen, 160);
@@ -1016,15 +1167,26 @@ panel.addEventListener('change', ev => {
   if (t.id === 'bName' && b) { const name = t.value.trim(); if (name) { checkpoint(); (state.props[b.id] ||= {}).name = name; persist(); regen(); } return; }
   if (t.id === 'bMat' && b) { (state.props[b.id] ||= {}).mat = t.value; persist(); renderPanel(); return; }
   if (t.id === 'vDisp') { view.display = t.value; persist(); rebuildScene(); return; }
+  if (t.id === 'vSnap') { view.snap = +t.value || 1; persist(); return; }
+  if (t.dataset.qf) {
+    const f = state.features.find(x => x.id === +t.dataset.qid), v = +t.value;
+    if (!f || !isFinite(v)) { renderPanel(); return; }
+    checkpoint(); f[t.dataset.qf] = v; persist(); regen(); return;
+  }
   if (t.id === 'vSec') { view.section = t.value !== 'off'; if (view.section) { view.secAxis = t.value; const bx = sceneBox(); view.secPos = +((bx.min[t.value] + bx.max[t.value]) / 2).toFixed(1); } rebuildScene(); renderPanel(); return; }
 });
-panel.addEventListener('keydown', ev => { if (ev.key === 'Enter' && editing && ev.target.tagName === 'INPUT') { ev.preventDefault(); clearTimeout(panel._t); regen(); commitEdit(); } });
+panel.addEventListener('keydown', ev => {
+  if (ev.key === 'Enter' && !editing && ev.target.dataset && ev.target.dataset.qf) { ev.target.blur(); return; } if (ev.key === 'Enter' && editing && ev.target.tagName === 'INPUT') { ev.preventDefault(); clearTimeout(panel._t); regen(); commitEdit(); } });
 panel.addEventListener('click', ev => {
   const t = ev.target.closest('button, .brow'); if (!t) return;
   if (t.id === 'dlgOk') { clearTimeout(panel._t); regen(); commitEdit(); return; }
   if (t.id === 'dlgCancel') { cancelEdit(); return; }
   if (t.id === 'dlgDel') { deleteFeature(); return; }
-  if (t.dataset.cmd === 'delete') { deleteBody(); return; }
+  if (t.dataset.cmd) { command(t.dataset.cmd); return; }
+  if (t.dataset.shape) { quickAdd(t.dataset.shape); return; }
+  if (t.dataset.align) { const [ax, w] = t.dataset.align.split(':'); alignSel(ax, w); return; }
+  if (t.dataset.hole) { setHole(t.dataset.hole === '1'); return; }
+  if (t.dataset.editf) { editFeature(+t.dataset.editf); return; }
   if (t.id === 'edgeClear' && editing) { editing.feat.edges = []; regen(); return; }
   if (t.id === 'faceClear' && editing) { editing.feat.faces = []; regen(); return; }
   if (t.dataset.eye) {
@@ -1033,7 +1195,15 @@ panel.addEventListener('click', ev => {
     persist(); rebuildScene(); renderPanel(); return;
   }
   if (t.dataset.bcolor && selBody) { (state.props[selBody] ||= {}).color = t.dataset.bcolor; persist(); rebuildScene(); renderPanel(); return; }
-  if (t.dataset.bid) { selBody = selBody === t.dataset.bid ? null : t.dataset.bid; rebuildScene(); renderPanel(); }
+  if (t.dataset.bid) { if (ev.shiftKey) toggleSel(t.dataset.bid); else if (selSet.size === 1 && selBody === t.dataset.bid) selectOnly(null); else selectOnly(t.dataset.bid); rebuildScene(); renderPanel(); }
+});
+panel.addEventListener('dragstart', ev => { const s = ev.target.closest && ev.target.closest('[data-shape]'); if (s) { ev.dataTransfer.setData('text/plain', 'shape:' + s.dataset.shape); ev.dataTransfer.effectAllowed = 'copy'; } });
+host.addEventListener('dragover', ev => { ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; });
+host.addEventListener('drop', ev => {
+  ev.preventDefault(); const d = ev.dataTransfer.getData('text/plain'); if (!d.startsWith('shape:')) return;
+  const type = d.slice(6); if (!DEFAULTS[type]) return;
+  const r = renderer.domElement.getBoundingClientRect(); ndc.set((ev.clientX - r.left) / r.width * 2 - 1, -(ev.clientY - r.top) / r.height * 2 + 1); ray.setFromCamera(ndc, camera);
+  const p = ray.ray.intersectPlane(new THREE.Plane(V3(0, 0, 1), 0), V3()); quickAdd(type, p || null);
 });
 tl.addEventListener('click', ev => { const c = ev.target.closest('[data-fid]'); if (c) editFeature(+c.dataset.fid); });
 document.querySelectorAll('[data-cmd3d]').forEach(b => b.addEventListener('click', () => command(b.dataset.cmd3d)));
@@ -1047,14 +1217,42 @@ function command(c) {
     case 'measure': measure.on = !measure.on; measure.pts = []; syncToolButtons(); rebuildMeasure(); draw(); if (!editing) renderPanel(); return;
     case 'stl': case 'obj': return exportMesh(c);
     case 'delete': return deleteBody();
+    case 'group': return groupSel();
+    case 'dup': return duplicateSel();
+    case 'drop': return dropToPlane();
   }
 }
 
 // 클릭으로 프로파일 / 바디 / 측정점 고르기 (끌기는 화면 회전)
 const ray = new THREE.Raycaster(), ndc = V2(0, 0);
 let down = null;
-renderer.domElement.addEventListener('pointerdown', e => { down = { x: e.clientX, y: e.clientY }; });
+const setNdc = e => { const r = renderer.domElement.getBoundingClientRect(); ndc.set((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1); ray.setFromCamera(ndc, camera); };
+const bodyMeshes = () => gBodies.children.filter(o => o.userData.bid);
+renderer.domElement.addEventListener('pointerdown', e => {
+  down = { x: e.clientX, y: e.clientY };
+  if (e.button !== 0 || editing || measure.on || e.shiftKey) return;
+  setNdc(e);
+  const hit = ray.intersectObjects(bodyMeshes(), false).filter(h => !view.section || clipPlane.distanceToPoint(h.point) >= -1e-6)[0];
+  if (!hit) return;
+  // 바디를 잡으면 화면 회전 대신 바닥과 나란한 평면 위에서 옮김
+  down.drag = { bid: hit.object.userData.bid, plane: new THREE.Plane(V3(0, 0, 1), -hit.point.z), start: hit.point.clone(), moved: false, d: V3() };
+  controls.enabled = false;
+});
+renderer.domElement.addEventListener('pointermove', e => {
+  const g = down && down.drag; if (!g) return;
+  if (!g.moved) {
+    if (Math.hypot(e.clientX - down.x, e.clientY - down.y) <= 4) return;
+    g.moved = true; if (!selSet.has(g.bid)) { selectOnly(g.bid); rebuildScene(); renderPanel(); }
+  }
+  setNdc(e); const p = ray.ray.intersectPlane(g.plane, V3()); if (!p) return;
+  const sn = v => Math.round(v / view.snap) * view.snap;
+  g.d.set(sn(p.x - g.start.x), sn(p.y - g.start.y), 0);
+  for (const o of gBodies.children) if (selSet.has(o.userData.bid) || selSet.has(o.userData.bidE)) o.position.copy(g.d);
+  flash(`이동 X ${fmt(g.d.x)} · Y ${fmt(g.d.y)} mm`); draw();
+});
 renderer.domElement.addEventListener('pointerup', e => {
+  const g = down && down.drag; controls.enabled = true;
+  if (g && g.moved) { down = null; const m = {}; for (const id of selSet) m[id] = [g.d.x, g.d.y, 0]; if (g.d.lengthSq() > 0) addPlace(m); else rebuildScene(); return; }
   if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4 || e.button !== 0) { down = null; return; }
   down = null;
   const r = renderer.domElement.getBoundingClientRect();
@@ -1101,7 +1299,9 @@ renderer.domElement.addEventListener('pointerup', e => {
     measure.pts.push(hits[0].point.clone()); rebuildMeasure(); draw(); if (!editing) renderPanel(); return;
   }
   if (editing) return;
-  selBody = hits.length ? hits[0].object.userData.bid : null; rebuildScene(); renderPanel();
+  const id = hits.length ? hits[0].object.userData.bid : null;
+  if (e.shiftKey && id) toggleSel(id); else selectOnly(id);
+  rebuildScene(); renderPanel();
 });
 addEventListener('keydown', e => {
   if (document.body.dataset.workspace !== '3d' || !$('#modal').hidden) return;
@@ -1109,10 +1309,21 @@ addEventListener('keydown', e => {
   const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
   if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (mod && k === 'y') { e.preventDefault(); redo(); return; }
+  if (mod && !editing && k === 'd') { e.preventDefault(); duplicateSel(); return; }
+  if (mod && !editing && k === 'g') { e.preventDefault(); groupSel(); return; }
+  if (mod && !editing && k === 'a') { e.preventDefault(); selSet = new Set(bodies.map(b => b.id)); selBody = bodies.length ? bodies[bodies.length - 1].id : null; rebuildScene(); renderPanel(); return; }
+  if (!editing && selSet.size && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(e.key)) {
+    e.preventDefault(); const st = view.snap * (e.shiftKey ? 10 : 1);
+    const z = e.key === 'PageUp' || (mod && e.key === 'ArrowUp') ? st : e.key === 'PageDown' || (mod && e.key === 'ArrowDown') ? -st : 0;
+    if (z) nudge(0, 0, z); else nudge(e.key === 'ArrowLeft' ? -st : e.key === 'ArrowRight' ? st : 0, e.key === 'ArrowUp' ? st : e.key === 'ArrowDown' ? -st : 0, 0);
+    return;
+  }
   if (mod) return;
-  if (e.key === 'Escape') { if (editing) cancelEdit(); else if (measure.on) { measureOff(); renderPanel(); } else if (selBody) { selBody = null; rebuildScene(); renderPanel(); } return; }
+  if (e.key === 'Escape') { if (editing) cancelEdit(); else if (measure.on) { measureOff(); renderPanel(); } else if (selSet.size) { selectOnly(null); rebuildScene(); renderPanel(); } return; }
   if (e.key === 'Enter' && editing) { commitEdit(); return; }
   if ((e.key === 'Delete' || e.key === 'Backspace') && !editing) { e.preventDefault(); deleteBody(); return; }
+  if (k === 'd' && !editing) { dropToPlane(); return; }
+  if (k === 'h' && !editing) { const l = selected(); if (l.length) setHole(!l.every(b => state.props[b.id] && state.props[b.id].hole)); else flash('바디를 먼저 클릭해서 고르세요'); return; }
   if (k === 'e') startFeature('extrude');
   else if (k === 'f') setView();
   else if (k === 'm') command('measure');
