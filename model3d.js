@@ -16,8 +16,8 @@ const fmt = v => { const r = Math.round(v * 100) / 100; return String(Object.is(
 const host = $('#view3d'), panel = $('#panel3d'), tl = $('#timeline');
 
 // ---------------------------------------------------------------- 상태
-const NAMES = { extrude: '돌출', revolve: '회전', box: '상자', cylinder: '원통', sphere: '구', cone: '원뿔', torus: '토러스', boolean: '결합', move: '이동', pattern: '패턴', mirror: '대칭', split: '분할' };
-const ICON = { extrude: '⬆', revolve: '↻', box: '▣', cylinder: '◎', sphere: '●', cone: '▲', torus: '◯', boolean: '⊕', move: '✥', pattern: '⁞', mirror: '⇋', split: '⫽' };
+const NAMES = { extrude: '돌출', revolve: '회전', box: '상자', cylinder: '원통', sphere: '구', cone: '원뿔', torus: '토러스', boolean: '결합', move: '이동', pattern: '패턴', mirror: '대칭', split: '분할', fillet3d: '모깎기', chamfer3d: '모따기' };
+const ICON = { extrude: '⬆', revolve: '↻', box: '▣', cylinder: '◎', sphere: '●', cone: '▲', torus: '◯', boolean: '⊕', move: '✥', pattern: '⁞', mirror: '⇋', split: '⫽', fillet3d: '◜', chamfer3d: '◸' };
 const DEFAULTS = {
   extrude: { profiles: [], plane: 'XY', offset: 0, distance: 20, dir: 'one', op: 'new', target: '' },
   revolve: { profiles: [], plane: 'XY', offset: 0, axis: 'X', angle: 360, op: 'new', target: '' },
@@ -31,6 +31,8 @@ const DEFAULTS = {
   pattern: { body: '', kind: 'rect', nx: 3, dx: 30, ny: 1, dy: 30, n: 6, angle: 360, cx: 0, cy: 0 },
   mirror: { body: '', plane: 'YZ', offset: 0, merge: true },
   split: { body: '', plane: 'XY', offset: 10 },
+  fillet3d: { body: '', edges: [], r: 3 },
+  chamfer3d: { body: '', edges: [], d: 2 },
 };
 const MATERIALS = [['steel', '강철', 7.85], ['al', '알루미늄', 2.70], ['brass', '황동', 8.50], ['abs', 'ABS', 1.04], ['pla', 'PLA', 1.24], ['wood', '나무', 0.60]];
 const BODY_COLORS = ['#9aa9b5', '#c9773f', '#5b8fc7', '#6aa36f', '#c8a64a', '#8e6fc1'];
@@ -41,6 +43,7 @@ let bodies = [];             // [{id, name, geom}]
 let errors = {};             // fid → 메시지
 let beforeIds = {};          // fid → 그 피처 직전의 바디 목록
 let draftTool = null;        // 편집 중인 잘라내기/교차 도구 형상 (미리보기)
+let pickGeom = null, pickSegs = [], draftEdges = [], pickLines = null; // 모깎기·모따기 모서리 고르기
 let editing = null;          // {feat, isNew}
 let selBody = null;
 let regions = [], regionsByKey = new Map(), sketchLinesCache = [];
@@ -319,7 +322,189 @@ function runFeature(f, ents, isDraft) {
       b.geom = B; const nb = newBody(bid); nb.geom = A; bodies.push(nb);
       return;
     }
+    case 'fillet3d': case 'chamfer3d': {
+      const b = targetOf(f, 'body'), base = b.geom, segs = edgeSegs(base), scale = geomScale(base);
+      if (isDraft) { pickGeom = base; pickSegs = segs; }
+      const kind = f.type === 'fillet3d' ? 'fillet' : 'chamfer', val = +(kind === 'fillet' ? f.r : f.d);
+      if (!(val > 0)) throw new Error(kind === 'fillet' ? '반지름은 0보다 커야 합니다' : '거리는 0보다 커야 합니다');
+      if (!f.edges.length) throw new Error('모서리를 하나 이상 고르세요 — 화면의 파란 모서리를 클릭');
+      const res = f.edges.map((m, i) => { const r = resolveEdge(base, segs, m, scale); if (!r) throw new Error(`모서리 ${i + 1}을(를) 찾을 수 없습니다 — 앞 피처가 바뀌었다면 모서리를 다시 고르세요`); return r; });
+      if (isDraft) draftEdges = res;
+      let g = base;
+      for (const ed of res) g = csg(g, edgeTool(ed, kind, val, scale), ed.convex ? 'cut' : 'join');
+      if (!triCount(g)) throw new Error('결과가 비어 있습니다 — 크기를 줄여 보세요');
+      b.geom = g; return;
+    }
   }
+}
+
+// ---------------------------------------------------------------- 3D 모서리: 모깎기·모따기
+const clamp1 = v => Math.max(-1, Math.min(1, v));
+function geomScale(g) { g.computeBoundingBox(); return Math.max(1, g.boundingBox.getSize(V3(0, 0, 0)).length()); }
+// 실제 모서리만 추출: 같은 직선 위에 겹치는 삼각형 변끼리 비교해 면이 꺾이는 곳만 남김 (CSG의 T자 이음매 대응)
+const edgeCache = new WeakMap();
+function edgeSegs(g, th = 20) {
+  const ck = edgeCache.get(g); if (ck && ck.th === th) return ck.segs;
+  const a = g.attributes.position.array, cosT = Math.cos(th * DEG), groups = new Map(), out = [];
+  const p = V3(), q = V3(), r = V3(), n = V3(), t = V3();
+  const R3 = v => Math.round(v * 1e3), R2 = v => Math.round(v * 1e2);
+  for (let i = 0; i < a.length; i += 9) {
+    p.set(a[i], a[i + 1], a[i + 2]); q.set(a[i + 3], a[i + 4], a[i + 5]); r.set(a[i + 6], a[i + 7], a[i + 8]);
+    n.subVectors(q, p).cross(t.subVectors(r, p)); if (n.lengthSq() < 1e-14) continue; n.normalize();
+    for (const [A, B] of [[p, q], [q, r], [r, p]]) {
+      const d = V3().subVectors(B, A), L = d.length(); if (L < 1e-7) continue; d.multiplyScalar(1 / L);
+      if (d.x < -1e-9 || (Math.abs(d.x) <= 1e-9 && (d.y < -1e-9 || (Math.abs(d.y) <= 1e-9 && d.z < 0)))) d.negate();
+      const perp = A.clone().addScaledVector(d, -A.dot(d));
+      const ki = [R3(d.x), R3(d.y), R3(d.z), R2(perp.x), R2(perp.y), R2(perp.z)], key = ki.join(',');
+      const t0 = A.dot(d), t1 = B.dot(d);
+      let gr = groups.get(key); if (!gr) groups.set(key, gr = []);
+      gr.push({ t0: Math.min(t0, t1), t1: Math.max(t0, t1), n: n.clone(), A: A.clone(), B: B.clone(), ki, d: d.clone() });
+    }
+  }
+  const check = (E, list, cmpT) => {
+    let partner = false;
+    for (const O of list) {
+      if (O === E) continue;
+      const o0 = cmpT ? O.t0 : Math.min(O.A.dot(E.d), O.B.dot(E.d)), o1 = cmpT ? O.t1 : Math.max(O.A.dot(E.d), O.B.dot(E.d));
+      if (o1 <= E.t0 + 1e-5 || o0 >= E.t1 - 1e-5) continue;
+      partner = true; if (E.n.dot(O.n) < cosT) return 'sharp';
+    }
+    return partner ? 'smooth' : 'none';
+  };
+  const OFF = [-1, 0, 1];
+  for (const gr of groups.values()) for (const E of gr) {
+    let res = check(E, gr, true);
+    if (res === 'none') {
+      // 반올림 경계에 걸린 이웃 칸까지 찾아봄
+      search: for (const a of OFF) for (const b of OFF) for (const c of OFF) for (const x of OFF) for (const y of OFF) for (const z of OFF) {
+        if (!a && !b && !c && !x && !y && !z) continue;
+        const k = E.ki; const o = groups.get(`${k[0] + a},${k[1] + b},${k[2] + c},${k[3] + x},${k[4] + y},${k[5] + z}`); if (!o) continue;
+        const r2 = check(E, o, false); if (r2 !== 'none') { res = r2; if (r2 === 'sharp') break search; }
+      }
+    }
+    if (res !== 'smooth') out.push([E.A, E.B]);
+  }
+  edgeCache.set(g, { th, segs: out });
+  return out;
+}
+// 모서리 위 점 M에 닿은 삼각형들의 면 방향 (법선 n, 모서리에서 면 안쪽으로 향하는 t)
+function facesAt(g, M, e, tol) {
+  const a = g.attributes.position.array, tri = new THREE.Triangle(), cp = V3(0, 0, 0), found = [];
+  for (let i = 0; i < a.length; i += 9) {
+    tri.a.set(a[i], a[i + 1], a[i + 2]); tri.b.set(a[i + 3], a[i + 4], a[i + 5]); tri.c.set(a[i + 6], a[i + 7], a[i + 8]);
+    tri.closestPointToPoint(M, cp); if (cp.distanceToSquared(M) > tol * tol) continue;
+    const n = tri.getNormal(V3(0, 0, 0)); if (n.lengthSq() < 0.5) continue;
+    let cen = null; for (const v of [tri.a, tri.b, tri.c]) { const q = V3().subVectors(v, M); q.addScaledVector(e, -q.dot(e)); if (!cen || q.lengthSq() > cen.lengthSq()) cen = q; }
+    if (cen.length() < 1e-6) continue;
+    const t = V3(0, 0, 0).crossVectors(n, e).normalize(); if (t.dot(cen) < 0) t.negate();
+    if (!found.some(f => f.n.dot(n) > 0.9995)) found.push({ n, t });
+  }
+  return found;
+}
+function expandStraight(segs, S, e, tol) {
+  const o = S[0], iv = [], off = p => { const q = V3().subVectors(p, o); return q.addScaledVector(e, -q.dot(e)).length(); };
+  for (const s of segs) {
+    const d = V3().subVectors(s[1], s[0]), L = d.length(); if (L < 1e-9 || Math.abs(d.dot(e) / L) < 0.99999) continue;
+    if (off(s[0]) > tol || off(s[1]) > tol) continue;
+    const a = V3().subVectors(s[0], o).dot(e), b = V3().subVectors(s[1], o).dot(e); iv.push([Math.min(a, b), Math.max(a, b)]);
+  }
+  let lo = 0, hi = S[0].distanceTo(S[1]), grew = true;
+  while (grew) { grew = false; for (const [a, b] of iv) if (a <= hi + tol && b >= lo - tol && (a < lo - 1e-9 || b > hi + 1e-9)) { lo = Math.min(lo, a); hi = Math.max(hi, b); grew = true; } }
+  return { P0: o.clone().addScaledVector(e, lo), P1: o.clone().addScaledVector(e, hi) };
+}
+// 원형 모서리 찾기: 모서리 평면 위의 다른 모서리 끝점들이 "M을 지나고 방향 e에 접하는 원"의 중심 위치에 투표
+function circleFromVotes(segs, M, e, fs, scale) {
+  const pts = []; for (const s of segs) pts.push(s[0], s[1]);
+  let best = null;
+  for (const f of fs) {
+    const ax = f.n.clone(); if (Math.abs(ax.dot(e)) > 1e-3) continue;
+    const k = V3().crossVectors(ax, e).normalize(), tp = Math.max(0.01, scale * 1e-4), votes = [];
+    for (const P of pts) {
+      const q = V3().subVectors(P, M); if (Math.abs(q.dot(ax)) > tp) continue;
+      const d2 = q.lengthSq(), dk = q.dot(k); if (d2 < 1e-4 || Math.abs(dk) < 1e-4) continue;
+      votes.push({ s: d2 / (2 * dk), P });
+    }
+    votes.sort((x, y) => x.s - y.s);
+    let i0 = 0;
+    for (let i = 0; i < votes.length; i++) {
+      while (votes[i].s - votes[i0].s > Math.max(0.02, Math.abs(votes[i].s) * 0.03)) i0++;
+      const cnt = i - i0 + 1; if (!best || cnt > best.cnt) best = { cnt, ax, k, group: votes.slice(i0, i + 1) };
+    }
+  }
+  if (!best || best.cnt < 6) return null;
+  const ax = best.ax, sMed = best.group[best.group.length >> 1].s;
+  let c = M.clone().addScaledVector(best.k, sMed), R = Math.abs(sMed);
+  const tp = Math.max(0.01, scale * 1e-4), plane = pts.filter(P => Math.abs(V3().subVectors(P, M).dot(ax)) <= tp);
+  const u = V3().subVectors(M, c).normalize(), v = V3().crossVectors(ax, u);
+  let sel = [];
+  for (const tolR of [0.06, 0.02, 0.006]) {
+    sel = plane.filter(P => Math.abs(P.distanceTo(c) - R) <= R * tolR + 0.005); if (sel.length < 6) return null;
+    // 평면 위 최소제곱 원 맞춤 (Kasa)
+    let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, sxz = 0, syz = 0, sz = 0;
+    for (const P of sel) { const q = V3().subVectors(P, c), x = q.dot(u), y = q.dot(v), z = x * x + y * y; sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y; sxz += x * z; syz += y * z; sz += z; }
+    const A = new THREE.Matrix3().set(sxx, sxy, sx, sxy, syy, sy, sx, sy, sel.length);
+    if (Math.abs(A.determinant()) < 1e-12) return null;
+    const r = V3(sxz, syz, sz).applyMatrix3(A.invert()), cx = r.x / 2, cy = r.y / 2;
+    c = c.clone().addScaledVector(u, cx).addScaledVector(v, cy); R = Math.sqrt(Math.max(0, r.z + cx * cx + cy * cy));
+  }
+  // 한 바퀴를 거의 다 덮는지 확인 (가장 큰 각도 빈틈 < 60°)
+  const angs = sel.map(P => { const q = V3().subVectors(P, c); return Math.atan2(q.dot(v), q.dot(u)); }).sort((a, b) => a - b);
+  let gap = TAU - (angs[angs.length - 1] - angs[0]); for (let i = 1; i < angs.length; i++) gap = Math.max(gap, angs[i] - angs[i - 1]);
+  if (gap > 60 * DEG || Math.abs(M.distanceTo(c) - R) > R * 0.02 + 0.01) return null;
+  return { c, ax, R };
+}
+function resolveEdge(g, segs, m, scale) {
+  const M0 = V3(m[0], m[1], m[2]), ln = new THREE.Line3(), cp = V3(0, 0, 0);
+  let S = null, bd = Infinity;
+  for (const s of segs) { ln.set(s[0], s[1]); ln.closestPointToPoint(M0, true, cp); const d = cp.distanceTo(M0); if (d < bd) { bd = d; S = s; } }
+  if (!S || bd > Math.max(0.5, scale * 0.01)) return null;
+  const e = V3().subVectors(S[1], S[0]).normalize(), M = V3().addVectors(S[0], S[1]).multiplyScalar(0.5), tol = Math.max(1e-3, scale * 2e-5);
+  const fs = facesAt(g, M, e, tol);
+  if (fs.length < 2) throw new Error('평평한 면 위의 선입니다 — 두 면이 만나는 모서리를 고르세요');
+  let f1 = fs[0], f2 = fs[1], md = Infinity;
+  for (let i = 0; i < fs.length; i++) for (let j = i + 1; j < fs.length; j++) { const d = fs[i].n.dot(fs[j].n); if (d < md) { md = d; f1 = fs[i]; f2 = fs[j]; } }
+  const convex = f2.t.dot(f1.n) < 0, q = v => Math.round(v * 100) / 100;
+  const circ = circleFromVotes(segs, M, e, [f1, f2], scale);
+  if (circ) return { type: 'circle', ...circ, M, t1: f1.t, t2: f2.t, convex, key: `c${q(circ.c.x)},${q(circ.c.y)},${q(circ.c.z)},${q(circ.R)}` };
+  const { P0, P1 } = expandStraight(segs, S, e, tol * 5);
+  const k = [P0, P1].map(p => `${q(p.x)},${q(p.y)},${q(p.z)}`).sort().join('|');
+  return { type: 'line', P0, P1, e, t1: f1.t, t2: f2.t, convex, key: 'l' + k };
+}
+// 모서리 단면(모서리 점 E, 두 면 방향 t1·t2) → 깎거나 채울 영역 다각형을 직선은 밀고 원형은 회전
+function edgeTool(ed, kind, val, scale) {
+  const t1 = ed.t1, w = V3().copy(ed.t2).addScaledVector(t1, -ed.t2.dot(t1));
+  if (w.length() < 1e-6) throw new Error('두 면이 거의 평평하게 이어진 모서리라 처리할 수 없습니다');
+  w.normalize();
+  const al = Math.acos(clamp1(t1.dot(ed.t2)));
+  if (al > Math.PI * 0.97) throw new Error('두 면이 거의 평평하게 이어진 모서리라 처리할 수 없습니다');
+  const eps = Math.max(0.01, scale * 1e-4), ca = Math.cos(al), sa = Math.sin(al), bis = V2(Math.cos(al / 2), Math.sin(al / 2));
+  const pts = [bis.clone().multiplyScalar(-eps / Math.sin(al / 2))];
+  if (kind === 'chamfer') {
+    pts.push(V2(val, -eps), V2(val, 0), V2(val * ca, val * sa), V2(val * ca - sa * eps, val * sa + ca * eps));
+  } else {
+    const k = val / Math.tan(al / 2), C = bis.clone().multiplyScalar(val / Math.sin(al / 2)), A = V2(k, 0), B = V2(k * ca, k * sa);
+    const a0 = Math.atan2(A.y - C.y, A.x - C.x), a1 = Math.atan2(B.y - C.y, B.x - C.x), tgt = Math.atan2(-bis.y, -bis.x);
+    let d = a1 - a0; while (d > Math.PI) d -= TAU; while (d <= -Math.PI) d += TAU;
+    const midA = a0 + d / 2; if (Math.abs(Math.atan2(Math.sin(midA - tgt), Math.cos(midA - tgt))) > Math.PI / 2) d -= Math.sign(d) * TAU;
+    pts.push(V2(k, -eps));
+    const n = Math.max(8, Math.ceil(Math.abs(d) / TAU * 96));
+    for (let i = 0; i <= n; i++) { const a = a0 + d * i / n; pts.push(V2(C.x + val * Math.cos(a), C.y + val * Math.sin(a))); }
+    pts.push(V2(k * ca - sa * eps, k * sa + ca * eps));
+  }
+  if (ed.type === 'line') {
+    const ext = Math.max(0.02, scale * 1e-4), z = V3().crossVectors(t1, w);
+    const g = new THREE.ExtrudeGeometry(new THREE.Shape(pts), { depth: ed.P0.distanceTo(ed.P1) + 2 * ext, bevelEnabled: false, curveSegments: 1 });
+    const start = z.dot(ed.e) > 0 ? ed.P0.clone().addScaledVector(ed.e, -ext) : ed.P1.clone().addScaledVector(ed.e, ext);
+    g.applyMatrix4(new THREE.Matrix4().makeBasis(t1, w, z).setPosition(start));
+    return prep(g);
+  }
+  const prof = pts.map(p => { const P = ed.M.clone().addScaledVector(t1, p.x).addScaledVector(w, p.y).sub(ed.c); const h = P.dot(ed.ax); return V2(P.addScaledVector(ed.ax, -h).length(), h); });
+  prof.push(prof[0].clone());
+  const g = new THREE.LatheGeometry(prof, 128);
+  const u = Math.abs(ed.ax.x) < 0.9 ? V3(1, 0, 0) : V3(0, 1, 0); u.addScaledVector(ed.ax, -u.dot(ed.ax)).normalize();
+  g.applyMatrix4(new THREE.Matrix4().makeBasis(u, ed.ax, V3().crossVectors(u, ed.ax)).setPosition(ed.c));
+  const out = prep(g); if (massProps(out).V < 0) flipWinding(out);
+  return out;
 }
 function featureList() {
   const list = state.features.slice();
@@ -330,7 +515,7 @@ function regen() {
   const ents = D.getEnts();
   regions = sketchRegions(ents); regionsByKey = new Map(regions.map(r => [r.key, r]));
   for (const b of bodies) b.geom && b.geom.dispose();
-  bodies = []; errors = {}; beforeIds = {}; bodyCounter = 0; draftTool = null;
+  bodies = []; errors = {}; beforeIds = {}; bodyCounter = 0; draftTool = null; pickGeom = null; pickSegs = []; draftEdges = [];
   for (const f of featureList()) {
     beforeIds[f.id] = bodies.map(b => ({ id: b.id, name: b.name }));
     if (f.suppressed) continue;
@@ -390,10 +575,24 @@ function rebuildScene() {
     });
     const mesh = new THREE.Mesh(b.geom, mat); mesh.userData = { bid: b.id, keepGeom: true }; gBodies.add(mesh);
     if (view.display !== 'shaded') {
-      const eg = new THREE.EdgesGeometry(b.geom, 25);
+      const eg = new THREE.BufferGeometry(), ep = []; for (const [a, c] of edgeSegs(b.geom, 25)) ep.push(a.x, a.y, a.z, c.x, c.y, c.z);
+      eg.setAttribute('position', new THREE.Float32BufferAttribute(ep, 3));
       gBodies.add(new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: sel ? T.accent : (wire ? T.ink : '#1e272d'), clippingPlanes: clip, transparent: true, opacity: wire ? 0.9 : 0.75 })));
     }
   });
+  pickLines = null;
+  if (editing && pickGeom && (editing.feat.type === 'fillet3d' || editing.feat.type === 'chamfer3d')) {
+    const pos = []; for (const [a, b] of pickSegs) pos.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    pickLines = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: T.c4, depthTest: false, transparent: true, opacity: 0.9 }));
+    pickLines.renderOrder = 5; gBodies.add(pickLines);
+    for (const ed of draftEdges) {
+      let p;
+      if (ed.type === 'line') p = [ed.P0, ed.P1];
+      else { const u = V3().subVectors(ed.M, ed.c); u.addScaledVector(ed.ax, -u.dot(ed.ax)).normalize(); const v = V3().crossVectors(ed.ax, u); p = []; for (let i = 0; i <= 96; i++) { const a = TAU * i / 96; p.push(ed.c.clone().addScaledVector(u, ed.R * Math.cos(a)).addScaledVector(v, ed.R * Math.sin(a))); } }
+      const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(p), new THREE.LineBasicMaterial({ color: T.accent, depthTest: false })); l.renderOrder = 6; gBodies.add(l);
+    }
+  }
   if (draftTool) {
     const m = new THREE.Mesh(draftTool, new THREE.MeshBasicMaterial({ color: T.c1, transparent: true, opacity: 0.18, depthWrite: false }));
     m.userData.keepGeom = true; gBodies.add(m);
@@ -494,6 +693,8 @@ function fieldDefs(f) {
       ...(f.kind === 'rect' ? [N('nx', 'X 개수'), N('dx', 'X 간격'), N('ny', 'Y 개수'), N('dy', 'Y 간격')] : [N('n', '개수'), N('angle', '전체 각도°'), N('cx', '중심 X'), N('cy', '중심 Y')])];
     case 'mirror': return [{ k: 'body', l: '바디', t: 'body' }, S('plane', '대칭 평면', planes), N('offset', '평면 위치'), { k: 'merge', l: '원본과 합치기', t: 'chk' }];
     case 'split': return [{ k: 'body', l: '바디', t: 'body' }, S('plane', '분할 평면', planes), N('offset', '평면 위치')];
+    case 'fillet3d': return [{ k: 'body', l: '바디', t: 'body' }, N('r', '반지름'), { k: 'edges', t: 'edges' }];
+    case 'chamfer3d': return [{ k: 'body', l: '바디', t: 'body' }, N('d', '거리'), { k: 'edges', t: 'edges' }];
   }
   return [];
 }
@@ -516,6 +717,9 @@ function renderDialog() {
       h += list.length ? list.map(b => `<label class="prow"><input type="checkbox" data-tool="${esc(b.id)}" ${f.tools.includes(b.id) ? 'checked' : ''}> ${esc(b.name)}</label>`).join('') : '<p class="hint">다른 바디가 없습니다</p>';
       h += `</div><div class="fields" style="margin-top:8px">`;
     }
+    else if (d.t === 'edges') {
+      h += `</div><p class="hint" style="margin:10px 0 6px">고른 모서리 <b id="edgeCount">${f.edges.length}</b>개 — 화면의 파란 모서리를 클릭해 고르거나 다시 눌러 빼세요. 직선과 원형 모서리를 고를 수 있습니다.</p><div class="row"><button class="btn" id="edgeClear">모서리 모두 빼기</button></div><div class="fields" style="margin-top:8px">`;
+    }
     else if (d.t === 'profiles') {
       h += `</div><p class="hint" style="margin:0 0 6px">프로파일 — 화면의 면을 클릭하거나 체크하세요</p><div class="plist">`;
       h += regions.length ? regions.map(r => `<label class="prow"><input type="checkbox" data-prof="${esc(r.key)}" ${f.profiles.includes(r.key) ? 'checked' : ''}> ${esc(r.label)}${r.holes.length ? ` · 구멍 ${r.holes.length}` : ''}<span>${fmt(r.area)} mm²</span></label>`).join('')
@@ -536,6 +740,7 @@ function updateDlgStatus() {
   const err = errors[editing.feat.id];
   el.textContent = err ? err : '';
   const ok = $('#dlgOk'); if (ok) ok.disabled = !!err && !editing.feat.suppressed;
+  const ec = $('#edgeCount'); if (ec) ec.textContent = editing.feat.edges.length;
   panel.querySelectorAll('[data-prof]').forEach(c => { c.checked = editing.feat.profiles.includes(c.dataset.prof); });
 }
 function renderPanel() {
@@ -594,8 +799,11 @@ function startFeature(type) {
   if (type === 'extrude' || type === 'revolve') {
     if (!view.sketch) { view.sketch = true; }
   }
-  if ((type === 'boolean' || type === 'move' || type === 'pattern' || type === 'mirror' || type === 'split') && !bodies.length) { flash('먼저 바디를 만드세요 — 돌출이나 상자부터 시작합니다'); return; }
+  if ((type === 'boolean' || type === 'move' || type === 'pattern' || type === 'mirror' || type === 'split' || type === 'fillet3d' || type === 'chamfer3d') && !bodies.length) { flash('먼저 바디를 만드세요 — 돌출이나 상자부터 시작합니다'); return; }
   if (selBody) { if ('body' in f) f.body = selBody; if (type === 'boolean') f.target = selBody; }
+  const last = bodies.length ? bodies[bodies.length - 1].id : '';
+  if ('body' in f && !f.body) f.body = last;
+  if ('target' in f && !f.target) f.target = last;
   editing = { feat: f, isNew: true };
   if (type === 'extrude' || type === 'revolve') { const r = regions.length === 1 ? regions[0] : null; if (r) f.profiles = [r.key]; }
   regen(); renderDialog();
@@ -647,6 +855,7 @@ panel.addEventListener('change', ev => {
     if (t.id === 'fSup') { editing.feat.suppressed = t.checked; regen(); return; }
     if (t.dataset.k) {
       editing.feat[t.dataset.k] = t.type === 'checkbox' ? t.checked : t.tagName === 'SELECT' ? t.value : (isFinite(+t.value) ? +t.value : t.value);
+      if (t.dataset.k === 'body' && editing.feat.edges) editing.feat.edges = [];
       regen(); if (t.dataset.rerender || t.dataset.k === 'target') renderDialog(); return;
     }
     return;
@@ -663,6 +872,7 @@ panel.addEventListener('click', ev => {
   if (t.id === 'dlgOk') { clearTimeout(panel._t); regen(); commitEdit(); return; }
   if (t.id === 'dlgCancel') { cancelEdit(); return; }
   if (t.id === 'dlgDel') { deleteFeature(); return; }
+  if (t.id === 'edgeClear' && editing) { editing.feat.edges = []; regen(); return; }
   if (t.dataset.eye) {
     if (t.dataset.eye === 'sketch') view.sketch = !view.sketch;
     else { const p = (state.props[t.dataset.eye] ||= {}); p.hidden = !p.hidden; }
@@ -695,6 +905,18 @@ renderer.domElement.addEventListener('pointerup', e => {
   const r = renderer.domElement.getBoundingClientRect();
   ndc.set((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1);
   ray.setFromCamera(ndc, camera);
+  if (editing && pickLines && (editing.feat.type === 'fillet3d' || editing.feat.type === 'chamfer3d')) {
+    ray.params.Line.threshold = camera.position.distanceTo(controls.target) * 0.012;
+    const hit = ray.intersectObject(pickLines, false)[0]; if (!hit) return;
+    const arr = pickLines.geometry.attributes.position.array, i = hit.index * 3;
+    const m = [(arr[i] + arr[i + 3]) / 2, (arr[i + 1] + arr[i + 4]) / 2, (arr[i + 2] + arr[i + 5]) / 2];
+    let ed;
+    try { ed = resolveEdge(pickGeom, pickSegs, m, geomScale(pickGeom)); } catch (err) { flash(err.message); return; }
+    if (!ed) return;
+    const at = draftEdges.findIndex(d => d.key === ed.key);
+    if (at >= 0) editing.feat.edges.splice(at, 1); else editing.feat.edges.push(m);
+    regen(); return;
+  }
   if (editing && (editing.feat.type === 'extrude' || editing.feat.type === 'revolve')) {
     const hits = ray.intersectObjects(gSketch.children.filter(o => o.userData.region), false);
     if (hits.length) {
@@ -737,6 +959,9 @@ window.Draftline3D = {
   setState(s) { checkpoint(); state = s && Array.isArray(s.features) ? sanitizeState(s) : { features: [], nextFid: 1, props: {} }; editing = null; selBody = null; persist(); regen(); setView(VIEWS.iso); },
   // 테스트·자동화용
   _debug: () => ({ bodies: bodies.map(b => ({ id: b.id, name: b.name, tris: triCount(b.geom), ...(p => ({ V: p.V, A: p.A }))(massProps(b.geom)) })), errors: { ...errors }, regions: regions.map(r => ({ key: r.key, holes: r.holes.length, area: r.area })) }),
+  _edge(bid, m) { const b = findBody(bid); const segs = edgeSegs(b.geom); const sc = geomScale(b.geom); const M0 = V3(...m);
+    const near = segs.map(s => { const l = new THREE.Line3(s[0], s[1]); const c = V3(); l.closestPointToPoint(M0, true, c); return { s, d: c.distanceTo(M0) }; }).sort((a, b) => a.d - b.d).slice(0, 4).map(x => [x.d.toFixed(4), x.s.map(p => p.toArray().map(v => +v.toFixed(3)))]);
+    let r; try { r = resolveEdge(b.geom, segs, m, sc); } catch (e) { r = e.message; } return { type: r && r.type, key: r && r.key, R: r && r.R, nsegs: segs.length }; },
   _start: startFeature, _set(k, v) { if (editing) { editing.feat[k] = v; regen(); } }, _commit: commitEdit,
 };
 
