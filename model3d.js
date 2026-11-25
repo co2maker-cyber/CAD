@@ -16,8 +16,8 @@ const fmt = v => { const r = Math.round(v * 100) / 100; return String(Object.is(
 const host = $('#view3d'), panel = $('#panel3d'), tl = $('#timeline');
 
 // ---------------------------------------------------------------- 상태
-const NAMES = { extrude: '돌출', revolve: '회전', box: '상자', cylinder: '원통', sphere: '구', cone: '원뿔', torus: '토러스', boolean: '결합', move: '이동', pattern: '패턴', mirror: '대칭', split: '분할', fillet3d: '모깎기', chamfer3d: '모따기', shell: '쉘', remove: '지우기', wedge: '쐐기', pyramid: '피라미드', tube: '튜브', hemisphere: '반구', place: '배치', copy: '복제', group: '그룹' };
-const ICON = { extrude: '⬆', revolve: '↻', box: '▣', cylinder: '◎', sphere: '●', cone: '▲', torus: '◯', boolean: '⊕', move: '✥', pattern: '⁞', mirror: '⇋', split: '⫽', fillet3d: '◜', chamfer3d: '◸', shell: '▢', remove: '✕', wedge: '◺', pyramid: '△', tube: '⊚', hemisphere: '◓', place: '✥', copy: '⧉', group: '⊞' };
+const NAMES = { extrude: '돌출', revolve: '회전', box: '상자', cylinder: '원통', sphere: '구', cone: '원뿔', torus: '토러스', boolean: '결합', move: '이동', pattern: '패턴', mirror: '대칭', split: '분할', fillet3d: '모깎기', chamfer3d: '모따기', shell: '쉘', remove: '지우기', wedge: '쐐기', pyramid: '피라미드', tube: '튜브', hemisphere: '반구', relief: '이미지 입체', place: '배치', copy: '복제', group: '그룹' };
+const ICON = { extrude: '⬆', revolve: '↻', box: '▣', cylinder: '◎', sphere: '●', cone: '▲', torus: '◯', boolean: '⊕', move: '✥', pattern: '⁞', mirror: '⇋', split: '⫽', fillet3d: '◜', chamfer3d: '◸', shell: '▢', remove: '✕', wedge: '◺', pyramid: '△', tube: '⊚', hemisphere: '◓', relief: '▦', place: '✥', copy: '⧉', group: '⊞' };
 const DEFAULTS = {
   extrude: { profiles: [], plane: 'XY', offset: 0, distance: 20, dir: 'one', op: 'new', target: '' },
   revolve: { profiles: [], plane: 'XY', offset: 0, axis: 'X', angle: 360, op: 'new', target: '' },
@@ -39,11 +39,12 @@ const DEFAULTS = {
   pyramid: { w: 30, h: 25, x: 0, y: 0, z: 0, op: 'new', target: '' },
   tube: { r: 15, r2: 10, h: 20, x: 0, y: 0, z: 0, op: 'new', target: '' },
   hemisphere: { r: 15, x: 0, y: 0, z: 0, op: 'new', target: '' },
+  relief: { grid: null, width: 60, base: 1, height: 3, invert: true, x: 0, y: 0, z: 0, op: 'new', target: '' },
   place: { moves: {} },
   copy: { body: '', dx: 10, dy: 10, dz: 0 },
   group: { target: '', solids: [], holes: [] },
 };
-const PRIMS = ['box', 'cylinder', 'sphere', 'cone', 'torus', 'wedge', 'pyramid', 'tube', 'hemisphere'];
+const PRIMS = ['box', 'cylinder', 'sphere', 'cone', 'torus', 'wedge', 'pyramid', 'tube', 'hemisphere', 'relief'];
 const MATERIALS = [['steel', '강철', 7.85], ['al', '알루미늄', 2.70], ['brass', '황동', 8.50], ['abs', 'ABS', 1.04], ['pla', 'PLA', 1.24], ['wood', '나무', 0.60]];
 const BODY_COLORS = ['#9aa9b5', '#c9773f', '#5b8fc7', '#6aa36f', '#c8a64a', '#8e6fc1'];
 
@@ -149,7 +150,7 @@ function sketchRegions(ents) {
   });
   return loops.map(l => {
     const holes = loops.filter(c => c.parent === l);
-    return { key: l.key, label: l.label, outer: l.pts, holes: holes.map(h => h.pts), area: l.area - holes.reduce((s, h) => s + h.area, 0) };
+    return { key: l.key, parentKey: l.parent ? l.parent.key : null, label: l.label, outer: l.pts, holes: holes.map(h => h.pts), area: l.area - holes.reduce((s, h) => s + h.area, 0) };
   });
 }
 function regionShape(r) {
@@ -286,10 +287,52 @@ function toolGeom(f, ents) {
     case 'tube': { const r = num('r', 0), r2 = num('r2', 0), h = num('h', 0); if (r2 >= r) throw new Error('안쪽 반지름은 바깥 반지름보다 작아야 합니다');
       const sh = new THREE.Shape(); sh.absarc(0, 0, r, 0, TAU, false); const hole = new THREE.Path(); hole.absarc(0, 0, r2, 0, TAU, true); sh.holes.push(hole);
       g = new THREE.ExtrudeGeometry(sh, { depth: h, bevelEnabled: false, curveSegments: 48 }); g.translate(+f.x, +f.y, +f.z); break; }
+    case 'relief': g = reliefGeom(f); g.translate(+f.x, +f.y, +f.z); break;
     case 'hemisphere': { const r = num('r', 0), pts = [V2(0, 0), V2(r, 0)]; for (let i = 1; i <= 32; i++) { const a = Math.PI / 2 * i / 32; pts.push(V2(r * Math.cos(a), r * Math.sin(a))); }
       g = prep(new THREE.LatheGeometry(pts, 96)); g.rotateX(Math.PI / 2); if (massProps(g).V < 0) flipWinding(g); g.translate(+f.x, +f.y, +f.z); break; }
   }
   return prep(g);
+}
+// 이미지 밝기 → 높이. 위·아래·옆면을 모두 만들어 닫힌 솔리드로
+function reliefGeom(f) {
+  const G = f.grid; if (!G || !(G.w > 1) || !(G.h > 1) || !Array.isArray(G.d) || G.d.length !== G.w * G.h) throw new Error('이미지 데이터가 없습니다 — 이미지를 다시 넣어 주세요');
+  const W = +f.width, base = +f.base, H = +f.height;
+  if (!(W > 0)) throw new Error('폭은 0보다 커야 합니다'); if (!(base > 0)) throw new Error('바닥 두께는 0보다 커야 합니다'); if (!(H >= 0)) throw new Error('최대 높이는 0 이상이어야 합니다');
+  const nx = G.w, ny = G.h, cell = W / (nx - 1), Dp = cell * (ny - 1), out = [];
+  const P3 = (i, j, top) => { let v = G.d[j * nx + i] / 255; if (f.invert) v = 1 - v; return V3(-W / 2 + i * cell, Dp / 2 - j * cell, top ? base + H * v : 0); };
+  const ab = V3(), ac = V3();
+  const tri = (a, b, c, e) => { ab.subVectors(b, a); ac.subVectors(c, a); if (ab.clone().cross(ac).dot(e) < 0) [b, c] = [c, b]; out.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z); };
+  const up = V3(0, 0, 1), dn = V3(0, 0, -1);
+  for (let j = 0; j < ny - 1; j++) for (let i = 0; i < nx - 1; i++) {
+    tri(P3(i, j, 1), P3(i + 1, j, 1), P3(i, j + 1, 1), up); tri(P3(i + 1, j, 1), P3(i + 1, j + 1, 1), P3(i, j + 1, 1), up);
+    tri(P3(i, j, 0), P3(i + 1, j, 0), P3(i, j + 1, 0), dn); tri(P3(i + 1, j, 0), P3(i + 1, j + 1, 0), P3(i, j + 1, 0), dn);
+  }
+  const wall = (a0, a1, e) => { tri(P3(...a0, 1), P3(...a1, 1), P3(...a0, 0), e); tri(P3(...a1, 1), P3(...a1, 0), P3(...a0, 0), e); };
+  for (let i = 0; i < nx - 1; i++) { wall([i, 0], [i + 1, 0], V3(0, 1, 0)); wall([i, ny - 1], [i + 1, ny - 1], V3(0, -1, 0)); }
+  for (let j = 0; j < ny - 1; j++) { wall([0, j], [0, j + 1], V3(-1, 0, 0)); wall([nx - 1, j], [nx - 1, j + 1], V3(1, 0, 0)); }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
+  return g;
+}
+// 이미지 파일 → 밝기 격자 (긴 쪽 최대 n칸)
+function imageToGrid(file, n = 80) {
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onerror = () => rej(new Error('파일을 읽지 못했습니다'));
+    fr.onload = () => {
+      const img = new Image();
+      img.onerror = () => rej(new Error('이미지로 읽을 수 없는 파일입니다'));
+      img.onload = () => {
+        const k = n / Math.max(img.naturalWidth, img.naturalHeight), w = Math.max(2, Math.round(img.naturalWidth * k)), h = Math.max(2, Math.round(img.naturalHeight * k));
+        const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d');
+        x.fillStyle = '#fff'; x.fillRect(0, 0, w, h); x.drawImage(img, 0, 0, w, h);
+        const px = x.getImageData(0, 0, w, h).data, d = [];
+        for (let i = 0; i < w * h; i++) d.push(Math.round(0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2]));
+        res({ w, h, d, aspect: img.naturalHeight / img.naturalWidth });
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
 }
 let bodyCounter = 0;
 function newBody(id) { bodyCounter++; const b = { id, name: (state.props[id] && state.props[id].name) || `바디${bodyCounter}` }; return b; }
@@ -374,7 +417,7 @@ function runFeature(f, ents, isDraft) {
       const b = targetOf(f, 'body'); bodies = bodies.filter(x => x !== b); return;
     }
     case 'place': {
-      for (const [id, v] of Object.entries(f.moves || {})) { const b = findBody(id); if (!b || !v || (!v[0] && !v[1] && !v[2])) continue; b.geom = transformed(b.geom, new THREE.Matrix4().makeTranslation(+v[0] || 0, +v[1] || 0, +v[2] || 0)); }
+      for (const [id, v] of Object.entries(f.moves || {})) { const b = findBody(id); if (!b || !v) continue; const m = toMat(v); if (m.equals(new THREE.Matrix4())) continue; b.geom = transformed(b.geom, m); }
       return;
     }
     case 'copy': {
@@ -736,6 +779,9 @@ const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 200000);
 camera.up.set(0, 0, 1); camera.position.set(180, -260, 190);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = false; controls.screenSpacePanning = true;
+// 휠 클릭(가운데 버튼)으로 화면 회전, 오른쪽 끌기로 이동, 휠로 확대
+controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
+renderer.domElement.addEventListener('mousedown', e => { if (e.button === 1) e.preventDefault(); });
 controls.addEventListener('change', draw);
 scene.add(new THREE.HemisphereLight(0xffffff, 0x8899aa, 1.4));
 const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(0.6, 0.4, 1); camera.add(key); scene.add(camera);
@@ -832,7 +878,96 @@ function rebuildScene() {
     }
   }
   rebuildMeasure();
+  rebuildRefImage();
+  rebuildGizmo();
   draw();
+}
+// 참고 이미지 (스케치 바닥에 깐 그림)를 3D 바닥에도 보여 줌
+const gRef = new THREE.Group(); scene.add(gRef); let refTex = null, refSrc = '';
+function rebuildRefImage() {
+  disposeGroup(gRef);
+  const im = D.getRefImage && D.getRefImage();
+  if (!im || !im.show || !view.sketch || !im.h) { draw(); return; }
+  if (refSrc !== im.src) { if (refTex) refTex.dispose(); refTex = new THREE.TextureLoader().load(im.src, draw); refTex.colorSpace = THREE.SRGBColorSpace; refSrc = im.src; }
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(im.w, im.h), new THREE.MeshBasicMaterial({ map: refTex, transparent: true, opacity: im.op, depthWrite: false, side: THREE.DoubleSide }));
+  m.position.set(im.x + im.w / 2, im.y + im.h / 2, 0.01); m.renderOrder = -1; gRef.add(m);
+}
+// 크기 조절(흰 상자) · 회전(고리) 손잡이
+const gGizmo = new THREE.Group(); scene.add(gGizmo);
+const AXC = ['#d0453a', '#3f9a4b', '#3d72c8'];
+function rebuildGizmo() {
+  disposeGroup(gGizmo);
+  if (editing || measure.on || placing || selSet.size !== 1 || gizmoDrag) return;
+  const b = findBody(selBody); if (!b || (state.props[b.id] && state.props[b.id].hidden)) return;
+  b.geom.computeBoundingBox();
+  const bb = b.geom.boundingBox, c = bb.getCenter(V3()), sz = bb.getSize(V3()), d = Math.max(sz.x, sz.y, sz.z, 1), hs = Math.max(0.8, d * 0.04);
+  const box = new THREE.BoxGeometry(hs, hs, hs), boxE = new THREE.EdgesGeometry(box);
+  const handle = (pos, data, fill) => {
+    const m = new THREE.Mesh(box, new THREE.MeshBasicMaterial({ color: fill || '#ffffff', depthTest: false })); m.position.copy(pos); m.renderOrder = 30; m.userData = { handle: data, keepGeom: true }; gGizmo.add(m);
+    const e = new THREE.LineSegments(boxE, new THREE.LineBasicMaterial({ color: '#1e272d', depthTest: false })); e.position.copy(pos); e.renderOrder = 31; e.userData.keepGeom = true; gGizmo.add(e);
+  };
+  const z0 = bb.min.z;
+  handle(V3(bb.max.x, c.y, z0), { kind: 'size', axes: [[0, 1]] }); handle(V3(bb.min.x, c.y, z0), { kind: 'size', axes: [[0, -1]] });
+  handle(V3(c.x, bb.max.y, z0), { kind: 'size', axes: [[1, 1]] }); handle(V3(c.x, bb.min.y, z0), { kind: 'size', axes: [[1, -1]] });
+  for (const sx of [-1, 1]) for (const sy of [-1, 1]) handle(V3(sx > 0 ? bb.max.x : bb.min.x, sy > 0 ? bb.max.y : bb.min.y, z0), { kind: 'size', axes: [[0, sx], [1, sy]] });
+  handle(V3(c.x, c.y, bb.max.z + hs * 1.2), { kind: 'size', axes: [[2, 1]] }, T.accent);
+  const ring = (ax, R) => {
+    const vis = new THREE.Mesh(new THREE.TorusGeometry(R, hs * 0.1, 6, 128), new THREE.MeshBasicMaterial({ color: AXC[ax], depthTest: false, transparent: true, opacity: 0.85 }));
+    const pick = new THREE.Mesh(new THREE.TorusGeometry(R, hs * 0.5, 6, 64), new THREE.MeshBasicMaterial({ visible: false }));
+    for (const m of [vis, pick]) { if (ax === 0) m.rotation.y = Math.PI / 2; if (ax === 1) m.rotation.x = Math.PI / 2; m.position.copy(c); m.renderOrder = 29; gGizmo.add(m); }
+    pick.userData.handle = { kind: 'rot', ax };
+  };
+  ring(2, Math.hypot(sz.x, sz.y) / 2 + hs * 2); ring(0, Math.hypot(sz.y, sz.z) / 2 + hs * 3); ring(1, Math.hypot(sz.x, sz.z) / 2 + hs * 4);
+}
+let gizmoDrag = null;
+function lineParam(o, dir) {
+  // 카메라 광선과 (점 o, 방향 dir) 직선 사이 가장 가까운 점의 직선 위 매개변수
+  const r = ray.ray, w0 = V3().subVectors(r.origin, o), b = r.direction.dot(dir), d = r.direction.dot(w0), e = dir.dot(w0), den = 1 - b * b;
+  return Math.abs(den) < 1e-9 ? null : (e - b * d) / den;
+}
+function gizmoStart(e, hit) {
+  const h = hit.object.userData.handle, b = findBody(selBody); if (!b) return false;
+  b.geom.computeBoundingBox(); const bb = b.geom.boundingBox.clone(), c = bb.getCenter(V3()), sz = bb.getSize(V3());
+  const g = { h, bid: b.id, bb, c, sz, M: new THREE.Matrix4() };
+  if (h.kind === 'size') {
+    if (h.axes.length === 1) { const ax = h.axes[0][0], dir = V3(ax === 0 ? 1 : 0, ax === 1 ? 1 : 0, ax === 2 ? 1 : 0); g.o = hit.object.position.clone(); g.dir = dir; g.p0 = lineParam(g.o, dir); }
+    else { g.plane = new THREE.Plane(V3(0, 0, 1), -bb.min.z); g.q0 = ray.ray.intersectPlane(g.plane, V3()); }
+  } else {
+    const n = V3(h.ax === 0 ? 1 : 0, h.ax === 1 ? 1 : 0, h.ax === 2 ? 1 : 0); g.n = n; g.plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, c);
+    g.u = V3(h.ax === 0 ? 0 : 1, h.ax === 0 ? 1 : 0, 0); if (h.ax === 2) g.u.set(1, 0, 0); g.v = V3().crossVectors(n, g.u);
+    const q = ray.ray.intersectPlane(g.plane, V3()); if (!q) return false; q.sub(c); g.a0 = Math.atan2(q.dot(g.v), q.dot(g.u));
+  }
+  gizmoDrag = g; controls.enabled = false; gGizmo.visible = false; return true;
+}
+function gizmoMove(e) {
+  const g = gizmoDrag; setNdc(e);
+  const sn = v => Math.max(view.snap, Math.round(v / view.snap) * view.snap), bb = g.bb;
+  if (g.h.kind === 'size') {
+    const k = [1, 1, 1], anc = [g.c.x, g.c.y, bb.min.z];
+    if (g.h.axes.length === 1) {
+      const p = lineParam(g.o, g.dir); if (p === null || g.p0 === null) return;
+      const [ax, sign] = g.h.axes[0], s0 = g.sz.getComponent(ax) || 1, ns = sn(s0 + (p - g.p0));
+      k[ax] = ns / s0; anc[ax] = ax === 2 ? bb.min.z : sign > 0 ? bb.min.getComponent(ax) : bb.max.getComponent(ax);
+    } else {
+      const q = ray.ray.intersectPlane(g.plane, V3()); if (!q || !g.q0) return;
+      for (const [ax, sign] of g.h.axes) { const s0 = g.sz.getComponent(ax) || 1; k[ax] = sn(s0 + sign * (q.getComponent(ax) - g.q0.getComponent(ax))) / s0; anc[ax] = sign > 0 ? bb.min.getComponent(ax) : bb.max.getComponent(ax); }
+    }
+    if (e.shiftKey) { const used = g.h.axes.map(a => a[0]), u = used.length === 1 ? k[used[0]] : Math.max(k[0], k[1]); k[0] = k[1] = k[2] = u; anc[2] = bb.min.z; for (let i = 0; i < 2; i++) if (!used.includes(i)) anc[i] = i === 0 ? g.c.x : g.c.y; }
+    const A = V3(...anc);
+    g.M = new THREE.Matrix4().makeTranslation(A.x, A.y, A.z).multiply(new THREE.Matrix4().makeScale(...k)).multiply(new THREE.Matrix4().makeTranslation(-A.x, -A.y, -A.z));
+    flash(`크기 ${fmt(g.sz.x * k[0])} × ${fmt(g.sz.y * k[1])} × ${fmt(g.sz.z * k[2])} mm${e.shiftKey ? ' (비율 유지)' : ''}`);
+  } else {
+    const q = ray.ray.intersectPlane(g.plane, V3()); if (!q) return; q.sub(g.c);
+    const step = (e.shiftKey ? 1 : 15) * DEG; let a = Math.atan2(q.dot(g.v), q.dot(g.u)) - g.a0; a = Math.round(a / step) * step;
+    const c = g.c; g.M = new THREE.Matrix4().makeTranslation(c.x, c.y, c.z).multiply(new THREE.Matrix4().makeRotationAxis(g.n, a)).multiply(new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z));
+    flash(`${'XYZ'[g.h.ax]}축 회전 ${fmt(a / DEG)}°${e.shiftKey ? '' : ' (Shift: 1° 단위)'}`);
+  }
+  for (const o of gBodies.children) if (o.userData.bid === g.bid || o.userData.bidE === g.bid) { o.matrixAutoUpdate = false; o.matrix.copy(g.M); o.matrixWorldNeedsUpdate = true; }
+  draw();
+}
+function gizmoEnd() {
+  const g = gizmoDrag; gizmoDrag = null; controls.enabled = true; gGizmo.visible = true;
+  if (!g.M.equals(new THREE.Matrix4())) addXform(g.bid, g.M); else rebuildScene();
 }
 function rebuildMeasure() {
   disposeGroup(gMeasure);
@@ -897,6 +1032,7 @@ function fieldDefs(f) {
     case 'pyramid': return [N('w', '밑변'), N('h', '높이'), ...pos, ...opTarget];
     case 'tube': return [N('r', '바깥 반지름'), N('r2', '안쪽 반지름'), N('h', '높이'), ...pos, ...opTarget];
     case 'hemisphere': return [N('r', '반지름'), ...pos, ...opTarget];
+    case 'relief': return [N('width', '폭 (mm)'), N('base', '바닥 두께'), N('height', '최대 높이'), { k: 'invert', l: '어두운 곳을 높게', t: 'chk' }, ...pos, ...opTarget];
     case 'place': return [{ k: 'moves', t: 'moves' }];
     case 'copy': return [{ k: 'body', l: '원본 바디', t: 'body' }, N('dx', '간격 X'), N('dy', '간격 Y'), N('dz', '간격 Z')];
     case 'group': return [{ k: 'target', l: '기준 바디', t: 'body' }, { k: 'groupinfo', t: 'groupinfo' }];
@@ -935,7 +1071,8 @@ function renderDialog() {
     else if (d.t === 'moves') {
       const ids = Object.keys(f.moves || {});
       h += `</div><p class="hint" style="margin:10px 0 6px">화면에서 끌거나 방향키로 옮긴 거리입니다 (mm).</p><div class="fields" style="grid-template-columns:auto repeat(3,minmax(0,1fr))">`;
-      for (const id of ids) { const nm = (before.find(b => b.id === id) || {}).name || id; h += `<label>${esc(nm)}</label>` + [0, 1, 2].map(i => `<input data-mv="${esc(id)}:${i}" inputmode="decimal" aria-label="${esc(nm)} ${'XYZ'[i]}" value="${fmt(f.moves[id][i])}">`).join(''); }
+      for (const id of ids) { const nm = (before.find(b => b.id === id) || {}).name || id, v = f.moves[id], off = v.length === 16 ? 12 : 0; h += `<label>${esc(nm)}${off ? ' *' : ''}</label>` + [0, 1, 2].map(i => `<input data-mv="${esc(id)}:${i}" inputmode="decimal" aria-label="${esc(nm)} ${'XYZ'[i]}" value="${fmt(v[off + i])}">`).join(''); }
+      if (ids.some(id => f.moves[id].length === 16)) h += `<p class="hint" style="grid-column:1/-1;margin:4px 0 0">* 크기·회전 손잡이로 바꾼 바디 — 여기서는 이동 거리만 고칠 수 있습니다</p>`;
       h += `</div><div class="fields" style="margin-top:8px">`;
     }
     else if (d.t === 'groupinfo') {
@@ -974,7 +1111,17 @@ function updateDlgStatus() {
 }
 function renderPanel() {
   if (editing) { renderDialog(); return; }
-  let h = `<section><h2>도형</h2><div class="shapes"><button class="shape" draggable="true" data-shape="box" title="상자 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M3 7l7-4 7 4v7l-7 4-7-4z"/><path d="M3 7l7 4 7-4M10 11v7"/></svg><span>상자</span></button><button class="shape" draggable="true" data-shape="cylinder" title="원통 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="5" rx="6" ry="2.2"/><path d="M4 5v10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2V5"/></svg><span>원통</span></button><button class="shape" draggable="true" data-shape="sphere" title="구 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><ellipse cx="10" cy="10" rx="7" ry="2.5"/></svg><span>구</span></button><button class="shape" draggable="true" data-shape="cone" title="원뿔 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M10 3L4 15M10 3l6 12"/><ellipse cx="10" cy="15" rx="6" ry="2"/></svg><span>원뿔</span></button><button class="shape" draggable="true" data-shape="torus" title="토러스 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="10" rx="7.5" ry="4.5"/><ellipse cx="10" cy="9.5" rx="3" ry="1.4"/></svg><span>토러스</span></button><button class="shape" draggable="true" data-shape="wedge" title="쐐기 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M3 16h14L3 5z"/><path d="M3 5l4-2 10 11"/></svg><span>쐐기</span></button><button class="shape" draggable="true" data-shape="pyramid" title="피라미드 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M10 3L3 15l7 2 7-2z"/><path d="M10 3v14"/></svg><span>피라미드</span></button><button class="shape" draggable="true" data-shape="tube" title="튜브 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="5" rx="6" ry="2.2"/><ellipse cx="10" cy="5" rx="3" ry="1.1"/><path d="M4 5v10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2V5"/></svg><span>튜브</span></button><button class="shape" draggable="true" data-shape="hemisphere" title="반구 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M3 13a7 7 0 0114 0z"/><ellipse cx="10" cy="13" rx="7" ry="2"/></svg><span>반구</span></button></div><p class="hint" style="margin-top:6px">클릭하면 화면 가운데 바닥에 놓이고, 끌어다 원하는 자리에 놓을 수도 있습니다.</p></section>`;
+  if (placing) {
+    const defs = fieldDefs({ type: placing.type, ...placing.f }).filter(d => (d.t === 'num' || d.t === 'chk') && !['x', 'y', 'z'].includes(d.k));
+    let h = `<section><h2>${ICON[placing.type]} ${NAMES[placing.type]} 놓기</h2><div class="fields">`;
+    for (const d of defs) h += d.t === 'chk' ? `<label for="p-${d.k}">${d.l}</label><input id="p-${d.k}" data-pf="${d.k}" type="checkbox" ${placing.f[d.k] ? 'checked' : ''} style="width:auto;justify-self:start">`
+      : `<label for="p-${d.k}">${d.l}</label><input id="p-${d.k}" data-pf="${d.k}" inputmode="decimal" value="${esc(placing.f[d.k])}">`;
+    if (placing.type === 'relief' && placing.f.grid) h += `<label>이미지</label><span class="muted">${placing.f.grid.w}×${placing.f.grid.h} 칸</span>`;
+    h += `<label for="p-hole">구멍으로</label><input id="p-hole" data-pf="__hole" type="checkbox" ${placing.hole ? 'checked' : ''} style="width:auto;justify-self:start"></div>
+      <p class="hint" style="margin-top:10px">화면에서 놓을 자리를 클릭하세요. 다른 바디 윗면을 누르면 그 위에 올라갑니다.</p><div class="row"><button class="btn" id="placeCancel">취소 (Esc)</button></div></section>`;
+    panel.innerHTML = h; return;
+  }
+  let h = `<section><h2>도형</h2><div class="shapes"><button class="shape" draggable="true" data-shape="box" title="상자 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M3 7l7-4 7 4v7l-7 4-7-4z"/><path d="M3 7l7 4 7-4M10 11v7"/></svg><span>상자</span></button><button class="shape" draggable="true" data-shape="cylinder" title="원통 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="5" rx="6" ry="2.2"/><path d="M4 5v10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2V5"/></svg><span>원통</span></button><button class="shape" draggable="true" data-shape="sphere" title="구 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><ellipse cx="10" cy="10" rx="7" ry="2.5"/></svg><span>구</span></button><button class="shape" draggable="true" data-shape="cone" title="원뿔 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M10 3L4 15M10 3l6 12"/><ellipse cx="10" cy="15" rx="6" ry="2"/></svg><span>원뿔</span></button><button class="shape" draggable="true" data-shape="torus" title="토러스 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="10" rx="7.5" ry="4.5"/><ellipse cx="10" cy="9.5" rx="3" ry="1.4"/></svg><span>토러스</span></button><button class="shape" draggable="true" data-shape="wedge" title="쐐기 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M3 16h14L3 5z"/><path d="M3 5l4-2 10 11"/></svg><span>쐐기</span></button><button class="shape" draggable="true" data-shape="pyramid" title="피라미드 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M10 3L3 15l7 2 7-2z"/><path d="M10 3v14"/></svg><span>피라미드</span></button><button class="shape" draggable="true" data-shape="tube" title="튜브 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="5" rx="6" ry="2.2"/><ellipse cx="10" cy="5" rx="3" ry="1.1"/><path d="M4 5v10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2V5"/></svg><span>튜브</span></button><button class="shape" draggable="true" data-shape="hemisphere" title="반구 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M3 13a7 7 0 0114 0z"/><ellipse cx="10" cy="13" rx="7" ry="2"/></svg><span>반구</span></button><button class="shape" data-shape="relief" title="이미지 입체 — 사진의 밝기를 높이로 바꾼 부조(리소페인)"><svg viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="1"/><circle cx="7.5" cy="8.5" r="1.5"/><path d="M3 14l4-4 3 3 3-3 4 4"/></svg><span>이미지</span></button></div><p class="hint" style="margin-top:6px">누르고 치수를 정한 뒤 화면을 클릭해 놓습니다. 화면으로 끌어다 놓으면 기본 크기로 바로 놓입니다.</p></section>`;
   h += `<section><h2>브라우저</h2><div class="plist">`;
   h += `<div class="brow"><button class="eye" data-eye="sketch" aria-pressed="${view.sketch}" title="스케치 보이기/숨기기">${view.sketch ? '◉' : '○'}</button><span>스케치 (XY)</span><span class="muted">${regions.length}개 프로파일</span></div>`;
   bodies.forEach((b, i) => {
@@ -1084,12 +1231,29 @@ function deleteBody() {
   flash(`${list.map(b => b.name).join(', ')}을(를) 지웠습니다 — Ctrl+Z로 되돌리거나 타임라인의 지우기 피처를 삭제하면 돌아옵니다`);
 }
 // 끌기·방향키·정렬·바닥에 놓기는 맨 끝의 '배치' 피처 하나에 모아 기록 (타임라인이 어지럽지 않게)
+const toMat = v => v.length === 16 ? new THREE.Matrix4().fromArray(v.map(Number)) : new THREE.Matrix4().makeTranslation(+v[0] || 0, +v[1] || 0, +v[2] || 0);
+function placeFeature() {
+  let f = state.features[state.features.length - 1];
+  if (!f || f.type !== 'place' || f.suppressed) { f = { id: state.nextFid++, type: 'place', moves: {} }; state.features.push(f); }
+  return f;
+}
+// 크기·회전 손잡이로 바꾼 변환을 배치 피처에 합침
+function addXform(bid, M) {
+  checkpoint();
+  const f = placeFeature(), cur = f.moves[bid];
+  const N = M.clone().multiply(cur ? toMat(cur) : new THREE.Matrix4());
+  f.moves[bid] = N.toArray().map(v => +v.toFixed(8));
+  persist(); regen();
+}
 function addPlace(map) {
   const ent = Object.entries(map).filter(([, d]) => Math.abs(d[0]) + Math.abs(d[1]) + Math.abs(d[2]) > 1e-9); if (!ent.length) return;
   checkpoint();
   let f = state.features[state.features.length - 1];
   if (!f || f.type !== 'place' || f.suppressed) { f = { id: state.nextFid++, type: 'place', moves: {} }; state.features.push(f); }
-  for (const [id, d] of ent) { const v = f.moves[id] || [0, 0, 0]; f.moves[id] = v.map((x, i) => +(x + d[i]).toFixed(6)); }
+  for (const [id, d] of ent) {
+    const v = f.moves[id] || [0, 0, 0];
+    f.moves[id] = v.length === 16 ? new THREE.Matrix4().makeTranslation(...d).multiply(toMat(v)).toArray().map(x => +x.toFixed(8)) : v.map((x, i) => +(x + d[i]).toFixed(6));
+  }
   persist(); regen();
 }
 function nudge(dx, dy, dz) { const list = needSel(); if (!list) return; const m = {}; for (const b of list) m[b.id] = [dx, dy, dz]; addPlace(m); }
@@ -1119,13 +1283,51 @@ function groupSel() {
   selectOnly(t.id); persist(); regen();
 }
 function setHole(on) { const list = needSel(); if (!list) return; checkpoint(); for (const b of list) (state.props[b.id] ||= {}).hole = on; persist(); regen(); }
-function quickAdd(type, at) {
+const baseZ = (type, f) => type === 'sphere' ? +f.r : type === 'torus' ? +f.r : 0;
+function quickAdd(type, at, params, hole) {
   if (editing) cancelEdit(false);
-  const f = { id: state.nextFid++, type, ...clone(DEFAULTS[type]), op: 'new' };
+  const f = { id: state.nextFid++, type, ...clone(DEFAULTS[type]), ...(params ? clone(params) : {}), op: 'new' };
   const sn = v => Math.round(v / view.snap) * view.snap, c = at || controls.target;
   f.x = +sn(c.x).toFixed(4); f.y = +sn(c.y).toFixed(4);
-  f.z = type === 'sphere' ? f.r : type === 'torus' ? f.r : 0;
-  checkpoint(); state.features.push(f); selectOnly('b' + f.id); persist(); regen();
+  f.z = +((at && at.z ? at.z : 0) + baseZ(type, f)).toFixed(4);
+  checkpoint(); state.features.push(f);
+  if (hole) (state.props['b' + f.id] ||= {}).hole = true;
+  selectOnly('b' + f.id); persist(); regen();
+}
+// 규격을 먼저 정하고 화면을 클릭해 놓기
+let placing = null;
+const gGhost = new THREE.Group(); scene.add(gGhost);
+function armPlace(type, extra) {
+  if (editing) cancelEdit(false);
+  measureOff();
+  const f = { ...clone(DEFAULTS[type]), ...(extra || {}), op: 'new' };
+  placing = { type, f, hole: false, pos: null };
+  selectOnly(null); updateGhost(); rebuildScene(); renderPanel();
+  flash('치수를 정한 뒤 화면에서 놓을 자리를 클릭하세요 (Esc 취소)');
+}
+function endPlace() { placing = null; disposeGroup(gGhost); renderPanel(); rebuildScene(); }
+function updateGhost() {
+  disposeGroup(gGhost); if (!placing) return draw();
+  let g; try { g = toolGeom({ type: placing.type, ...placing.f, x: 0, y: 0, z: baseZ(placing.type, placing.f) }, D.getEnts()); } catch (err) { flash(err.message); return draw(); }
+  const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: placing.hole ? '#8d979f' : T.accent, transparent: true, opacity: 0.45, depthWrite: false, side: THREE.DoubleSide }));
+  gGhost.add(m); if (placing.pos) gGhost.position.copy(placing.pos); gGhost.visible = !!placing.pos; draw();
+}
+function placeAt(e) {
+  setNdc(e);
+  const hit = ray.intersectObjects(bodyMeshes(), false)[0];
+  const p = hit && hit.face && hit.face.normal.z > 0.7 ? hit.point.clone() : ray.ray.intersectPlane(new THREE.Plane(V3(0, 0, 1), 0), V3());
+  if (!p) return null;
+  const sn = v => Math.round(v / view.snap) * view.snap; p.x = sn(p.x); p.y = sn(p.y); p.z = Math.max(0, +p.z.toFixed(4));
+  return p;
+}
+function pickImageFile() {
+  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*';
+  inp.onchange = async () => {
+    const file = inp.files[0]; if (!file) return;
+    try { const G = await imageToGrid(file); armPlace('relief', { grid: { w: G.w, h: G.h, d: G.d } }); flash(`이미지를 ${G.w}×${G.h} 칸으로 읽었습니다 — 폭·높이를 정하고 화면을 클릭하세요`); }
+    catch (err) { flash(err.message); }
+  };
+  inp.click();
 }
 function measureOff() { if (measure.on) { measure.on = false; measure.pts = []; syncToolButtons(); rebuildMeasure(); } }
 function flash(msg) { const el = $('#flash3d'); if (!el) return; el.textContent = msg; el.hidden = false; clearTimeout(flash.t); flash.t = setTimeout(() => el.hidden = true, 2800); }
@@ -1144,7 +1346,8 @@ function exportMesh(kind) {
 panel.addEventListener('input', ev => {
   const t = ev.target;
   if (t.id === 'vSecPos') { view.secPos = +t.value; t.nextElementSibling && (t.nextElementSibling.textContent = `단면 위치 ${fmt(view.secPos)} mm`); rebuildScene(); return; }
-  if (editing && t.dataset.mv) { const [id, i] = t.dataset.mv.split(':'); const v = +t.value; if (isFinite(v)) { editing.feat.moves[id][+i] = v; clearTimeout(panel._t); panel._t = setTimeout(regen, 160); } return; }
+  if (placing && t.dataset.pf && t.type !== 'checkbox') { if (isFinite(+t.value) && t.value !== '') { placing.f[t.dataset.pf] = +t.value; clearTimeout(panel._g); panel._g = setTimeout(updateGhost, 120); } return; }
+  if (editing && t.dataset.mv) { const [id, i] = t.dataset.mv.split(':'); const v = +t.value; if (isFinite(v)) { const arr = editing.feat.moves[id]; arr[(arr.length === 16 ? 12 : 0) + +i] = v; clearTimeout(panel._t); panel._t = setTimeout(regen, 160); } return; }
   if (!editing || !t.dataset.k || t.tagName !== 'INPUT' || t.type === 'checkbox') return;
   editing.feat[t.dataset.k] = t.value === '' || t.value === '-' ? t.value : +t.value;
   clearTimeout(panel._t); panel._t = setTimeout(regen, 160);
@@ -1168,6 +1371,10 @@ panel.addEventListener('change', ev => {
   if (t.id === 'bMat' && b) { (state.props[b.id] ||= {}).mat = t.value; persist(); renderPanel(); return; }
   if (t.id === 'vDisp') { view.display = t.value; persist(); rebuildScene(); return; }
   if (t.id === 'vSnap') { view.snap = +t.value || 1; persist(); return; }
+  if (placing && t.dataset.pf) {
+    if (t.dataset.pf === '__hole') placing.hole = t.checked; else if (t.type === 'checkbox') placing.f[t.dataset.pf] = t.checked; else if (isFinite(+t.value)) placing.f[t.dataset.pf] = +t.value;
+    updateGhost(); return;
+  }
   if (t.dataset.qf) {
     const f = state.features.find(x => x.id === +t.dataset.qid), v = +t.value;
     if (!f || !isFinite(v)) { renderPanel(); return; }
@@ -1183,7 +1390,11 @@ panel.addEventListener('click', ev => {
   if (t.id === 'dlgCancel') { cancelEdit(); return; }
   if (t.id === 'dlgDel') { deleteFeature(); return; }
   if (t.dataset.cmd) { command(t.dataset.cmd); return; }
-  if (t.dataset.shape) { quickAdd(t.dataset.shape); return; }
+  if (t.dataset.shape) {
+    if (t.dataset.shape === 'relief') { pickImageFile(); return; }
+    armPlace(t.dataset.shape); return;
+  }
+  if (t.id === 'placeCancel') { endPlace(); return; }
   if (t.dataset.align) { const [ax, w] = t.dataset.align.split(':'); alignSel(ax, w); return; }
   if (t.dataset.hole) { setHole(t.dataset.hole === '1'); return; }
   if (t.dataset.editf) { editFeature(+t.dataset.editf); return; }
@@ -1230,8 +1441,13 @@ const setNdc = e => { const r = renderer.domElement.getBoundingClientRect(); ndc
 const bodyMeshes = () => gBodies.children.filter(o => o.userData.bid);
 renderer.domElement.addEventListener('pointerdown', e => {
   down = { x: e.clientX, y: e.clientY };
-  if (e.button !== 0 || editing || measure.on || e.shiftKey) return;
+  if (e.button !== 0 || editing || measure.on || placing) return;
   setNdc(e);
+  // 겹치면 크기 손잡이를 회전 고리보다 먼저 잡음
+  const ghs = gGizmo.visible ? ray.intersectObjects(gGizmo.children.filter(o => o.userData.handle), false) : [];
+  const gh = ghs.find(h => h.object.userData.handle.kind === 'size') || ghs[0] || null;
+  if (gh && gizmoStart(e, gh)) { down.gizmo = true; return; }
+  if (e.shiftKey) return;
   const hit = ray.intersectObjects(bodyMeshes(), false).filter(h => !view.section || clipPlane.distanceToPoint(h.point) >= -1e-6)[0];
   if (!hit) return;
   // 바디를 잡으면 화면 회전 대신 바닥과 나란한 평면 위에서 옮김
@@ -1239,6 +1455,8 @@ renderer.domElement.addEventListener('pointerdown', e => {
   controls.enabled = false;
 });
 renderer.domElement.addEventListener('pointermove', e => {
+  if (gizmoDrag) { gizmoMove(e); return; }
+  if (placing) { const p = placeAt(e); if (p) { placing.pos = p; gGhost.position.copy(p); gGhost.visible = true; draw(); } return; }
   const g = down && down.drag; if (!g) return;
   if (!g.moved) {
     if (Math.hypot(e.clientX - down.x, e.clientY - down.y) <= 4) return;
@@ -1251,6 +1469,10 @@ renderer.domElement.addEventListener('pointermove', e => {
   flash(`이동 X ${fmt(g.d.x)} · Y ${fmt(g.d.y)} mm`); draw();
 });
 renderer.domElement.addEventListener('pointerup', e => {
+  if (gizmoDrag) { down = null; gizmoEnd(); return; }
+  if (placing && down && e.button === 0 && Math.hypot(e.clientX - down.x, e.clientY - down.y) <= 4) {
+    down = null; const p = placeAt(e); if (!p) return; const pl = placing; placing = null; disposeGroup(gGhost); quickAdd(pl.type, p, pl.f, pl.hole); return;
+  }
   const g = down && down.drag; controls.enabled = true;
   if (g && g.moved) { down = null; const m = {}; for (const id of selSet) m[id] = [g.d.x, g.d.y, 0]; if (g.d.lengthSq() > 0) addPlace(m); else rebuildScene(); return; }
   if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4 || e.button !== 0) { down = null; return; }
@@ -1319,6 +1541,7 @@ addEventListener('keydown', e => {
     return;
   }
   if (mod) return;
+  if (e.key === 'Escape' && placing) { endPlace(); return; }
   if (e.key === 'Escape') { if (editing) cancelEdit(); else if (measure.on) { measureOff(); renderPanel(); } else if (selSet.size) { selectOnly(null); rebuildScene(); renderPanel(); } return; }
   if (e.key === 'Enter' && editing) { commitEdit(); return; }
   if ((e.key === 'Delete' || e.key === 'Backspace') && !editing) { e.preventDefault(); deleteBody(); return; }
@@ -1339,6 +1562,20 @@ window.Draftline3D = {
   setState(s) { checkpoint(); state = s && Array.isArray(s.features) ? sanitizeState(s) : { features: [], nextFid: 1, props: {} }; editing = null; selBody = null; persist(); regen(); setView(VIEWS.iso); },
   // 테스트·자동화용
   _debug: () => ({ bodies: bodies.map(b => ({ id: b.id, name: b.name, tris: triCount(b.geom), ...(p => ({ V: p.V, A: p.A }))(massProps(b.geom)) })), errors: { ...errors }, regions: regions.map(r => ({ key: r.key, holes: r.holes.length, area: r.area })) }),
+  extrudeFrom(ids) {
+    if (editing) cancelEdit(false); if (placing) endPlace();
+    regen();
+    const set = new Set(ids);
+    let chosen = ids.length ? regions.filter(r => r.key.split(',').every(k => set.has(+k))) : regions.filter(r => !r.parentKey);
+    chosen = chosen.filter(r => !chosen.some(o => o.key === r.parentKey));
+    if (!chosen.length) { flash(ids.length ? '고른 것 중 닫힌 도형이 없습니다 — 사각형·원·닫힌 폴리선(또는 끝이 이어진 선)을 고르세요' : '스케치에 닫힌 도형이 없습니다'); return; }
+    startFeature('extrude'); editing.feat.profiles = chosen.map(r => r.key); regen(); renderDialog();
+    flash(`프로파일 ${chosen.length}개로 돌출합니다 — 거리를 정하고 확인을 누르세요`);
+  },
+  refImageChanged() { rebuildScene(); },
+  _handles() { const r = renderer.domElement.getBoundingClientRect(); gGizmo.updateMatrixWorld(true); camera.updateMatrixWorld();
+    return gGizmo.children.filter(o => o.userData.handle).map(o => { const w = o.userData.handle.kind === 'rot' ? V3(o.geometry.parameters.radius, 0, 0).applyMatrix4(o.matrixWorld) : o.getWorldPosition(V3()); const q = w.project(camera);
+      return { ...o.userData.handle, x: r.left + (q.x + 1) / 2 * r.width, y: r.top + (1 - q.y) / 2 * r.height }; }); },
   _start: startFeature, _set(k, v) { if (editing) { editing.feat[k] = v; regen(); } }, _commit: commitEdit,
 };
 

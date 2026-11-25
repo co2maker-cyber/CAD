@@ -113,9 +113,9 @@ body:not([data-workspace="3d"]) .only3d{display:none!important}
 .aligns{display:grid;grid-template-columns:auto repeat(3,minmax(0,1fr));gap:4px;align-items:center;font-size:12px;color:var(--muted)}
 .aligns .btn{height:28px;padding:0 4px;font-size:12px}
 @media (max-width:1600px){.tb kbd{display:none}}
-@media (max-width:1360px){[aria-label="수정 도구"] .tb .lbl{display:none}}
+@media (max-width:1560px){[aria-label="수정 도구"] .tb .lbl,[aria-label="입체와 이미지"] .tb .lbl{display:none}}
 @media (max-width:1300px){.brand{display:none}}
-@media (max-width:1680px){body[data-workspace="3d"] .tb .lbl{display:none}}
+@media (max-width:2200px){body[data-workspace="3d"] .tb .lbl{display:none}}
 @media (max-width:1400px){body[data-workspace="3d"] .tb{padding:0 6px}}
 @media (max-width:1180px){.tb .lbl{display:none}}
 @media (max-width:760px){
@@ -147,6 +147,10 @@ body:not([data-workspace="3d"]) .only3d{display:none!important}
       <button class="tb" data-tool="offset" title="오프셋 (O)"><svg viewBox="0 0 20 20"><path d="M3 13L13 3"/><path d="M7 17L17 7" stroke-dasharray="2 2"/></svg><span class="lbl">오프셋</span><kbd>O</kbd></button>
       <button class="tb" data-tool="trim" title="자르기 (T)"><svg viewBox="0 0 20 20"><path d="M10 3v14"/><path d="M3 10h5"/><path d="M12 10h5" stroke-dasharray="2 2"/></svg><span class="lbl">자르기</span><kbd>T</kbd></button>
       <button class="tb" data-tool="fillet" title="모깎기 (F)"><svg viewBox="0 0 20 20"><path d="M4 17V10a6 6 0 016-6h7"/></svg><span class="lbl">모깎기</span><kbd>F</kbd></button>
+    </div>
+    <div class="group only2d" role="toolbar" aria-label="입체와 이미지">
+      <button class="tb" id="bExtrude" title="고른 닫힌 도형을 3D로 돌출 (E) — 고른 게 없으면 전체"><svg viewBox="0 0 20 20"><path d="M4 15h9l3-3H7z"/><path d="M10 12V3M7 6l3-3 3 3"/></svg><span class="lbl">3D 돌출</span><kbd>E</kbd></button>
+      <button class="tb" id="bImage" title="참고 이미지 넣기 — 밑그림으로 깔고 따라 그리기"><svg viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="1"/><circle cx="7.5" cy="8.5" r="1.5"/><path d="M3 14l4-4 3 3 3-3 4 4"/></svg><span class="lbl">이미지</span></button>
     </div>
     <div class="group only2d">
       <button class="tb" id="bUndo" title="실행 취소 (Ctrl+Z)"><svg viewBox="0 0 20 20"><path d="M7 5L3 9l4 4"/><path d="M3 9h9a5 5 0 010 10H9"/></svg></button>
@@ -225,6 +229,7 @@ body:not([data-workspace="3d"]) .only3d{display:none!important}
     <textarea id="mText" spellcheck="false"></textarea>
     <div class="row">
       <input type="file" id="mFile" accept=".json,application/json" hidden>
+      <input type="file" id="imgFile" accept="image/*" hidden>
       <button class="btn" id="mPick" hidden>파일 선택…</button>
       <div class="spacer"></div>
       <button class="btn" id="mDl" hidden>파일로 저장</button>
@@ -703,6 +708,7 @@ function draw(){
   rq=0;readTheme();
   ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle=T.canvas;ctx.fillRect(0,0,W,H);
   if(opts.grid)drawGrid();
+  if(refImg&&refImg.show&&refEl&&refEl.complete&&refEl.naturalWidth){const ih=refImg.w*refEl.naturalHeight/refEl.naturalWidth,tl=w2s(P(refImg.x,refImg.y+ih));ctx.globalAlpha=refImg.op;ctx.drawImage(refEl,tl.x,tl.y,refImg.w*view.s,ih*view.s);ctx.globalAlpha=1;}
   const moving=drag&&drag.kind==='move'&&drag.moved;
   for(const e of ents){
     const isSel=sel.has(e.id)||(draft&&draft.src===e.id);
@@ -804,10 +810,12 @@ function updatePanel(){
   }else{
     let b=null;for(const e of ents){const q=bboxOf(e);b=b?{x0:Math.min(b.x0,q.x0),y0:Math.min(b.y0,q.y0),x1:Math.max(b.x1,q.x1),y1:Math.max(b.y1,q.y1)}:q;}
     h+=`<section><h2>도면</h2><dl class="info"><dt>객체</dt><dd>${ents.length}</dd><dt>범위</dt><dd>${b?f2(b.x1-b.x0)+' × '+f2(b.y1-b.y0):'—'}</dd><dt>단위</dt><dd>mm</dd></dl></section>`;
+    h+=refImg?`<section><h2>참고 이미지</h2><div class="fields"><label for="imX">X</label><input id="imX" data-im="x" inputmode="decimal" value="${fmt(refImg.x)}"><label for="imY">Y</label><input id="imY" data-im="y" inputmode="decimal" value="${fmt(refImg.y)}"><label for="imW">폭 mm</label><input id="imW" data-im="w" inputmode="decimal" value="${fmt(refImg.w)}"><label for="imOp">투명도</label><input id="imOp" data-im="op" type="range" min="0.05" max="1" step="0.05" value="${refImg.op}"><label for="imShow">보이기</label><input id="imShow" data-im="show" type="checkbox" ${refImg.show?'checked':''} style="width:auto;justify-self:start"></div><div class="row" style="margin-top:8px;display:flex;gap:8px"><button class="btn" id="imPick">바꾸기</button><button class="btn danger" id="imDel">지우기</button></div><p class="hint" style="margin-top:6px">도면 밑에 깔린 그림입니다. 따라 그린 뒤 <b>3D 돌출(E)</b>로 입체를 만들 수 있어요.</p></section>`
+      :`<section><h2>참고 이미지</h2><button class="btn" id="imPick">이미지 넣기</button><p class="hint" style="margin-top:6px">사진이나 도면 이미지를 밑그림으로 깔고 따라 그릴 수 있습니다.</p></section>`;
     h+=`<section><h2>새 객체 색상</h2>${swatchesHTML(curColor)}</section>`;
     h+=`<section><h2>수정 도구</h2><div class="fields"><label for="pfOff">오프셋</label><input id="pfOff" inputmode="decimal" value="${fmt(opts.offDist)}"><label for="pfFil">모깎기 R</label><input id="pfFil" inputmode="decimal" value="${fmt(opts.filletR)}"></div></section>`;
     h+=`<section><h2>스냅 간격</h2><div class="fields"><label for="pfStep">mm</label><select id="pfStep">${[0.5,1,2,5,10,25,50].map(v=>`<option value="${v}" ${v===opts.step?'selected':''}>${v}</option>`).join('')}</select></div></section>`;
-    h+=`<section><h2>단축키</h2><div class="keys"><b>L P R C</b><span>선·폴리선·사각형·원</span><b>A D</b><span>원호(3점)·치수</span><b>O T F</b><span>오프셋·자르기·모깎기</span><b>X</b><span>사각형·폴리선 분해</span><b>V / Esc</b><span>선택 / 취소</span><b>Enter·Space</b><span>입력 확정·끝내기</span><b>Shift</b><span>직교 임시 반전</span><b>휠·가운데</b><span>확대·이동</span><b>Space+끌기</b><span>화면 이동</span><b>Z</b><span>전체 보기</span><b>Ctrl+Z/Y</b><span>실행 취소/다시</span><b>Ctrl+A/D</b><span>전체 선택/복제</span></div></section>`;
+    h+=`<section><h2>단축키</h2><div class="keys"><b>L P R C</b><span>선·폴리선·사각형·원</span><b>A D</b><span>원호(3점)·치수</span><b>O T F</b><span>오프셋·자르기·모깎기</span><b>X</b><span>사각형·폴리선 분해</span><b>V / Esc</b><span>선택 / 취소</span><b>Enter·Space</b><span>입력 확정·끝내기</span><b>Shift</b><span>직교 임시 반전</span><b>휠·가운데</b><span>확대·이동</span><b>Space+끌기</b><span>화면 이동</span><b>Z</b><span>전체 보기</span><b>Ctrl+Z/Y</b><span>실행 취소/다시</span><b>Ctrl+A/D</b><span>전체 선택/복제</span><b>E</b><span>고른 도형 3D 돌출</span></div></section>`;
     h+=`<section><p class="hint">입력 예: <b>100</b> 커서 방향 길이 · <b>20,30</b> 절대좌표 · <b>@30,0</b> 상대좌표 · <b>@50&lt;30</b> 길이·각도. 도면은 이 브라우저에 자동 저장됩니다.</p></section>`;
   }
   el.innerHTML=h;
@@ -815,6 +823,7 @@ function updatePanel(){
 $('#panel').addEventListener('change',ev=>{
   const t=ev.target;
   if(t.id==='pfStep'){opts.step=+t.value;persist();return;}
+  if(t.dataset.im&&refImg){const k=t.dataset.im;if(k==='show')refImg.show=t.checked;else{const v=+t.value;if(!isFinite(v)||(k==='w'&&v<=0)){updatePanel();return;}refImg[k]=v;}saveRefImg();render();notifyImg();return;}
   if(t.id==='pfOff'||t.id==='pfFil'){const v=Number(t.value),isOff=t.id==='pfOff';if(!isFinite(v)||v<0||(isOff&&v===0)){updatePrompt(isOff?'오프셋 거리는 0보다 커야 합니다':'반지름은 0 이상이어야 합니다',true);updatePanel();return;}
     if(isOff)opts.offDist=v;else opts.filletR=v;persist();updatePrompt();render();return;}
   const S=ents.filter(e=>sel.has(e.id));
@@ -827,8 +836,11 @@ $('#panel').addEventListener('change',ev=>{
     changed();}
 });
 $('#panel').addEventListener('keydown',ev=>{if(ev.key==='Enter'&&ev.target.matches('input'))ev.target.blur();});
+$('#panel').addEventListener('input',ev=>{if(ev.target.id==='imOp'&&refImg){refImg.op=+ev.target.value;render();notifyImg();}});
 $('#panel').addEventListener('click',ev=>{
   if(ev.target.id==='pfExplode'){explodeSel();return;}
+  if(ev.target.id==='imPick'){$('#imgFile').click();return;}
+  if(ev.target.id==='imDel'){refImg=null;refEl=null;saveRefImg();render();updatePanel();notifyImg();updatePrompt('참고 이미지를 지웠습니다');return;}
   const b=ev.target.closest('[data-color]');if(!b)return;const c=+b.dataset.color;
   if(sel.size){checkpoint();ents.forEach(e=>{if(sel.has(e.id))e.color=c;});curColor=c;changed();}
   else{curColor=c;persist();updatePanel();}
@@ -942,6 +954,7 @@ addEventListener('keydown',ev=>{
   if(sc&&!ev.altKey){setTool(sc);return;}
   if(k.toLowerCase()==='z')fit();
   if(k.toLowerCase()==='x')explodeSel();
+  if(k.toLowerCase()==='e'){ev.stopImmediatePropagation();extrudeSketch();return;}
 });
 addEventListener('keyup',ev=>{if(ev.key===' '){spaceDown=false;updateCursorStyle();}if(ev.key==='Shift'){shiftDown=false;if(mouse.in){computeCursor();render();}}});
 addEventListener('blur',()=>{spaceDown=false;shiftDown=false;});
@@ -1009,7 +1022,28 @@ $('#modal').addEventListener('pointerdown',ev=>{if(ev.target.id==='modal')closeM
 const MODEL_KEY='draftline.model.v1';
 function getModel(){if(window.Draftline3D)return window.Draftline3D.getState();try{return JSON.parse(localStorage.getItem(MODEL_KEY)||'null');}catch(_){return null;}}
 function setModel(m){if(window.Draftline3D)window.Draftline3D.setState(m);else{try{localStorage.setItem(MODEL_KEY,JSON.stringify(m&&Array.isArray(m.features)?m:{features:[],nextFid:1,props:{}}));}catch(_){}}}
+// ---------- reference image ----------
+const IMG_KEY='draftline.img';
+let refImg=null,refEl=null;
+function setRefEl(){refEl=new Image();refEl.onload=()=>{render();notifyImg();};refEl.src=refImg.src;}
+function saveRefImg(){try{if(refImg)localStorage.setItem(IMG_KEY,JSON.stringify(refImg));else localStorage.removeItem(IMG_KEY);}catch(_){updatePrompt('이미지가 커서 브라우저에 저장하지 못했습니다 — 이번 화면에서만 보입니다',true);}}
+function notifyImg(){if(window.Draftline3D&&window.Draftline3D.refImageChanged)window.Draftline3D.refImageChanged();}
+function importRefImage(file){
+  const fr=new FileReader();
+  fr.onload=()=>{const im=new Image();
+    im.onload=()=>{const k=Math.min(1,1600/Math.max(im.naturalWidth,im.naturalHeight)),c=document.createElement('canvas');c.width=Math.max(1,Math.round(im.naturalWidth*k));c.height=Math.max(1,Math.round(im.naturalHeight*k));
+      const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(im,0,0,c.width,c.height);
+      const w=refImg?refImg.w:100,ctr=s2w(W/2,H/2),hh=w*c.height/c.width;
+      refImg={src:c.toDataURL('image/jpeg',0.85),x:refImg?refImg.x:+(ctr.x-w/2).toFixed(1),y:refImg?refImg.y:+(ctr.y-hh/2).toFixed(1),w,op:refImg?refImg.op:0.5,show:true};
+      saveRefImg();setRefEl();updatePanel();updatePrompt('이미지를 넣었습니다 — 오른쪽에서 위치·폭·투명도를 맞추세요');};
+    im.onerror=()=>updatePrompt('이미지로 읽을 수 없는 파일입니다',true);im.src=fr.result;};
+  fr.readAsDataURL(file);
+}
+$('#imgFile').onchange=()=>{const f=$('#imgFile').files[0];if(f)importRefImage(f);$('#imgFile').value='';};
+$('#bImage').onclick=()=>$('#imgFile').click();
+try{refImg=JSON.parse(localStorage.getItem(IMG_KEY)||'null');if(refImg&&refImg.src)setRefEl();else refImg=null;}catch(_){refImg=null;}
 window.Draftline={getEnts:()=>ents,onChange:f=>listeners.push(f),arcSweep,
+  getRefImage:()=>refImg&&refEl&&refEl.naturalWidth?{...refImg,h:refImg.w*refEl.naturalHeight/refEl.naturalWidth}:null,
   openText:(title,hint,text,fname)=>openModal(title,hint,text,'복사',copyText,false,fname)};
 let m3d=null;
 function setWS(ws){
@@ -1023,6 +1057,9 @@ function setWS(ws){
   if(ws==='2d'){resize();render();}
 }
 document.querySelectorAll('.ws-btn').forEach(b=>b.addEventListener('click',()=>setWS(b.dataset.wsv)));
+// 스케치의 닫힌 도형을 3D 돌출로 (고른 것이 없으면 전체)
+async function extrudeSketch(){const ids=[...sel];setWS('3d');try{await m3d;}catch(_){}if(window.Draftline3D&&window.Draftline3D.extrudeFrom)window.Draftline3D.extrudeFrom(ids);}
+$('#bExtrude').onclick=extrudeSketch;
 
 // ---------- boot ----------
 function resize(){const r=stage.getBoundingClientRect();dpr=window.devicePixelRatio||1;W=r.width;H=r.height;cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);
