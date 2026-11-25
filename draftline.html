@@ -76,11 +76,41 @@ footer{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:6px 1
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--canvas)}
 .btn:hover{filter:brightness(1.05)}
 .danger{color:var(--c1)}
-@media (max-width:1360px){.tb kbd{display:none}}
+.wsw{display:flex;padding:2px;background:var(--bg);border:1px solid var(--line);border-radius:6px}
+.wsw button{height:30px;padding:0 12px;border-radius:4px;font-size:13px;color:var(--muted)}
+.wsw button[aria-pressed="true"]{background:var(--panel);color:var(--fg);box-shadow:0 0 0 1px var(--line)}
+body[data-workspace="3d"] .only2d{display:none!important}
+body:not([data-workspace="3d"]) .only3d{display:none!important}
+.app>aside{grid-column:2;grid-row:2}
+#view3d{position:absolute;inset:0}
+#view3d canvas{display:block;width:100%;height:100%;touch-action:none}
+#flash3d{position:absolute;left:50%;top:12px;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 12px;font-size:13px;z-index:2;max-width:calc(100% - 32px)}
+.plist{display:flex;flex-direction:column;gap:2px}
+.prow,.brow{display:flex;align-items:center;gap:8px;font-size:13px;padding:4px 6px;border-radius:4px;cursor:pointer}
+.prow span{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--muted)}
+.brow:hover,.prow:hover{background:var(--hover)}
+.brow.on{background:var(--accent-soft);color:var(--accent)}
+.brow .muted{margin-left:auto}
+.muted{color:var(--muted);font-size:12px}
+.eye{width:22px;height:22px;border-radius:4px;color:var(--muted)}
+.dot{width:10px;height:10px;border-radius:50%;flex:none;box-shadow:0 0 0 1px var(--line)}
+.dlg-err{color:var(--c1);font-size:12px;min-height:1em;margin:10px 0 0;line-height:1.5}
+#timeline{display:flex;align-items:center;gap:4px;flex:1;min-width:0;overflow-x:auto;padding-block:2px}
+.tl-label{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-right:6px;flex:none}
+.chip{flex:none;height:28px;padding:0 10px;border:1px solid var(--line);border-radius:14px;font-size:12px;background:var(--canvas);white-space:nowrap}
+.chip:hover{border-color:var(--accent)}
+.chip.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.chip.err{border-color:var(--c1);color:var(--c1)}
+.chip.sup{opacity:.5;text-decoration:line-through}
+.btn:disabled{opacity:.45;cursor:default}
+@media (max-width:1600px){.tb kbd{display:none}}
+@media (max-width:1360px){[aria-label="수정 도구"] .tb .lbl{display:none}}
+@media (max-width:1300px){.brand{display:none}}
+@media (max-width:1680px){body[data-workspace="3d"] .tb .lbl{display:none}}
 @media (max-width:1180px){.tb .lbl{display:none}}
 @media (max-width:760px){
   .app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(260px,1fr) auto auto}
-  aside{grid-row:4;border-left:0;border-top:1px solid var(--line);max-height:30vh;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+  .app>aside{grid-row:4;grid-column:1;border-left:0;border-top:1px solid var(--line);max-height:30vh;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
   footer{grid-row:3}
   .tb .lbl{display:none} .tb kbd{display:none}
   #coords{min-width:0}
@@ -90,7 +120,11 @@ footer{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:6px 1
 <div class="app">
   <header>
     <div class="brand">Draftline</div>
-    <div class="group" role="toolbar" aria-label="그리기 도구" id="tools">
+    <div class="wsw" role="group" aria-label="작업공간">
+      <button class="ws-btn" data-wsv="2d" aria-pressed="true" title="2D 스케치">스케치</button>
+      <button class="ws-btn" data-wsv="3d" aria-pressed="false" title="3D 모델">모델</button>
+    </div>
+    <div class="group only2d" role="toolbar" aria-label="그리기 도구" id="tools">
       <button class="tb" data-tool="select" title="선택 (V)"><svg viewBox="0 0 20 20"><path d="M5 3l11 7.5-5.2 1.3L8.2 17z"/></svg><span class="lbl">선택</span><kbd>V</kbd></button>
       <button class="tb" data-tool="line" title="선 (L)"><svg viewBox="0 0 20 20"><path d="M4 16L16 4"/><circle cx="4" cy="16" r="1.4"/><circle cx="16" cy="4" r="1.4"/></svg><span class="lbl">선</span><kbd>L</kbd></button>
       <button class="tb" data-tool="pline" title="폴리선 (P)"><svg viewBox="0 0 20 20"><path d="M3 15L7.5 5.5 12.5 12 17 4"/></svg><span class="lbl">폴리선</span><kbd>P</kbd></button>
@@ -99,42 +133,74 @@ footer{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:6px 1
       <button class="tb" data-tool="arc" title="원호 — 3점 (A)"><svg viewBox="0 0 20 20"><path d="M3.5 15a7 7 0 0113 0"/><circle cx="3.5" cy="15" r="1.3"/><circle cx="16.5" cy="15" r="1.3"/></svg><span class="lbl">원호</span><kbd>A</kbd></button>
       <button class="tb" data-tool="dim" title="치수 (D)"><svg viewBox="0 0 20 20"><path d="M3 6v10M17 6v10M3 11h14M3 11l3-2M3 11l3 2M17 11l-3-2M17 11l-3 2"/></svg><span class="lbl">치수</span><kbd>D</kbd></button>
     </div>
-    <div class="group" role="toolbar" aria-label="수정 도구">
+    <div class="group only2d" role="toolbar" aria-label="수정 도구">
       <button class="tb" data-tool="offset" title="오프셋 (O)"><svg viewBox="0 0 20 20"><path d="M3 13L13 3"/><path d="M7 17L17 7" stroke-dasharray="2 2"/></svg><span class="lbl">오프셋</span><kbd>O</kbd></button>
       <button class="tb" data-tool="trim" title="자르기 (T)"><svg viewBox="0 0 20 20"><path d="M10 3v14"/><path d="M3 10h5"/><path d="M12 10h5" stroke-dasharray="2 2"/></svg><span class="lbl">자르기</span><kbd>T</kbd></button>
       <button class="tb" data-tool="fillet" title="모깎기 (F)"><svg viewBox="0 0 20 20"><path d="M4 17V10a6 6 0 016-6h7"/></svg><span class="lbl">모깎기</span><kbd>F</kbd></button>
     </div>
-    <div class="group">
+    <div class="group only2d">
       <button class="tb" id="bUndo" title="실행 취소 (Ctrl+Z)"><svg viewBox="0 0 20 20"><path d="M7 5L3 9l4 4"/><path d="M3 9h9a5 5 0 010 10H9"/></svg></button>
       <button class="tb" id="bRedo" title="다시 실행 (Ctrl+Y)"><svg viewBox="0 0 20 20"><path d="M13 5l4 4-4 4"/><path d="M17 9H8a5 5 0 000 10h3"/></svg></button>
       <button class="tb" id="bDel" title="삭제 (Delete)"><svg viewBox="0 0 20 20"><path d="M4 6h12M8 6V4h4v2M6 6l1 11h6l1-11"/></svg></button>
       <button class="tb" id="bFit" title="전체 보기 (Z)"><svg viewBox="0 0 20 20"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4"/></svg></button>
     </div>
+    <div class="group only3d" role="toolbar" aria-label="만들기">
+      <button class="tb" data-cmd3d="extrude" title="돌출 (E)"><svg viewBox="0 0 20 20"><path d="M4 15h9l3-3H7z"/><path d="M10 12V3M7 6l3-3 3 3"/></svg><span class="lbl">돌출</span></button>
+      <button class="tb" data-cmd3d="revolve" title="회전"><svg viewBox="0 0 20 20"><path d="M10 2v16" stroke-dasharray="2 2"/><path d="M15 6a5 2 0 11-10 0M15 14a5 2 0 11-10 0M5 6v8M15 6v8"/></svg><span class="lbl">회전</span></button>
+      <button class="tb" data-cmd3d="box" title="상자"><svg viewBox="0 0 20 20"><path d="M3 7l7-4 7 4v7l-7 4-7-4z"/><path d="M3 7l7 4 7-4M10 11v7"/></svg><span class="lbl">상자</span></button>
+      <button class="tb" data-cmd3d="cylinder" title="원통"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="5" rx="6" ry="2.2"/><path d="M4 5v10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2V5"/></svg><span class="lbl">원통</span></button>
+      <button class="tb" data-cmd3d="sphere" title="구"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><ellipse cx="10" cy="10" rx="7" ry="2.5"/></svg><span class="lbl">구</span></button>
+      <button class="tb" data-cmd3d="cone" title="원뿔"><svg viewBox="0 0 20 20"><path d="M10 3L4 15M10 3l6 12"/><ellipse cx="10" cy="15" rx="6" ry="2"/></svg><span class="lbl">원뿔</span></button>
+      <button class="tb" data-cmd3d="torus" title="토러스"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="10" rx="7.5" ry="4.5"/><ellipse cx="10" cy="9.5" rx="3" ry="1.4"/></svg><span class="lbl">토러스</span></button>
+    </div>
+    <div class="group only3d" role="toolbar" aria-label="수정">
+      <button class="tb" data-cmd3d="boolean" title="결합 — 더하기·빼기·교차"><svg viewBox="0 0 20 20"><circle cx="8" cy="10" r="5"/><circle cx="12" cy="10" r="5"/></svg><span class="lbl">결합</span></button>
+      <button class="tb" data-cmd3d="move" title="이동·회전"><svg viewBox="0 0 20 20"><path d="M10 2v16M2 10h16M10 2l-2 2M10 2l2 2M10 18l-2-2M10 18l2-2M2 10l2-2M2 10l2 2M18 10l-2-2M18 10l-2 2"/></svg><span class="lbl">이동</span></button>
+      <button class="tb" data-cmd3d="pattern" title="패턴 — 배열 복사"><svg viewBox="0 0 20 20"><rect x="3" y="3" width="5" height="5"/><rect x="12" y="3" width="5" height="5"/><rect x="3" y="12" width="5" height="5"/><rect x="12" y="12" width="5" height="5"/></svg><span class="lbl">패턴</span></button>
+      <button class="tb" data-cmd3d="mirror" title="대칭"><svg viewBox="0 0 20 20"><path d="M10 2v16" stroke-dasharray="2 2"/><path d="M8 5L3 15h5zM12 5l5 10h-5z"/></svg><span class="lbl">대칭</span></button>
+      <button class="tb" data-cmd3d="split" title="분할 — 평면으로 바디 나누기"><svg viewBox="0 0 20 20"><rect x="4" y="4" width="12" height="12"/><path d="M2 12L18 8"/></svg><span class="lbl">분할</span></button>
+    </div>
+    <div class="group only3d" role="toolbar" aria-label="검사와 보기">
+      <button class="tb" data-cmd3d="measure" aria-pressed="false" title="측정 (M)"><svg viewBox="0 0 20 20"><path d="M3 14L14 3l3 3L6 17z"/><path d="M7 10l2 2M10 7l2 2"/></svg><span class="lbl">측정</span></button>
+      <button class="tb" data-cmd3d="iso" title="등각 보기">등각</button>
+      <button class="tb" data-cmd3d="top" title="위에서 보기">위</button>
+      <button class="tb" data-cmd3d="front" title="앞에서 보기">앞</button>
+      <button class="tb" data-cmd3d="right" title="오른쪽에서 보기">우측</button>
+      <button class="tb" data-cmd3d="fit" title="화면 맞춤 (F)"><svg viewBox="0 0 20 20"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4"/></svg></button>
+    </div>
+    <div class="group only3d">
+      <button class="tb" data-cmd3d="undo" title="실행 취소 (Ctrl+Z)"><svg viewBox="0 0 20 20"><path d="M7 5L3 9l4 4"/><path d="M3 9h9a5 5 0 010 10H9"/></svg></button>
+      <button class="tb" data-cmd3d="redo" title="다시 실행 (Ctrl+Y)"><svg viewBox="0 0 20 20"><path d="M13 5l4 4-4 4"/><path d="M17 9H8a5 5 0 000 10h3"/></svg></button>
+    </div>
     <div class="spacer"></div>
     <div class="group">
-      <button class="tb" id="bDxf" title="DXF 내보내기">DXF</button>
+      <button class="tb only3d" data-cmd3d="stl" title="STL 내보내기 (3D 프린팅)">STL</button>
+      <button class="tb only3d" data-cmd3d="obj" title="OBJ 내보내기">OBJ</button>
+      <button class="tb only2d" id="bDxf" title="DXF 내보내기">DXF</button>
       <button class="tb" id="bJson" title="JSON으로 저장">저장</button>
       <button class="tb" id="bOpen" title="JSON 불러오기">열기</button>
       <button class="tb" id="bNew">새 도면</button>
     </div>
   </header>
 
-  <div class="stage" id="stage"><canvas id="cv" aria-label="도면 영역"></canvas></div>
+  <div class="stage" id="stage"><canvas id="cv" class="only2d" aria-label="도면 영역"></canvas><div id="view3d" class="only3d" aria-label="3D 모델 화면"></div><div id="flash3d" class="only3d" role="status" hidden></div></div>
 
-  <aside id="panel" aria-label="속성"></aside>
+  <aside id="panel" class="only2d" aria-label="속성"></aside>
+  <aside id="panel3d" class="only3d" aria-label="3D 속성"><p class="hint">3D 엔진을 불러오는 중…</p></aside>
 
   <footer>
-    <div class="cmd">
+    <div id="timeline" class="only3d" aria-label="타임라인"></div>
+    <div class="cmd only2d">
       <span id="prompt"></span>
       <input id="cmd" autocomplete="off" spellcheck="false" placeholder="명령 또는 좌표 (예: 50, @30,20, @40<45)" aria-label="명령 입력">
     </div>
-    <div class="toggles">
+    <div class="toggles only2d">
       <button class="tg" data-opt="grid" title="그리드 표시 (F7)">GRID</button>
       <button class="tg" data-opt="snap" title="그리드 스냅 (F9)">SNAP</button>
       <button class="tg" data-opt="ortho" title="직교 (F8, Shift 누르는 동안 반전)">ORTHO</button>
       <button class="tg" data-opt="osnap" title="객체 스냅 (F3)">OSNAP</button>
     </div>
-    <div id="coords"></div>
+    <div id="coords" class="only2d"></div>
   </footer>
 </div>
 
@@ -147,12 +213,21 @@ footer{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:6px 1
       <input type="file" id="mFile" accept=".json,application/json" hidden>
       <button class="btn" id="mPick" hidden>파일 선택…</button>
       <div class="spacer"></div>
+      <button class="btn" id="mDl" hidden>파일로 저장</button>
       <button class="btn" id="mClose">닫기</button>
       <button class="btn primary" id="mAct"></button>
     </div>
   </div>
 </div>
 
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "three-mesh-bvh":"https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.3/build/index.module.js",
+  "three-bvh-csg":"https://cdn.jsdelivr.net/npm/three-bvh-csg@0.0.16/build/index.module.js"
+}}
+</script>
 <script>
 (()=>{
 const $=s=>document.querySelector(s);
@@ -275,7 +350,8 @@ function redo(){if(!redoStack.length)return;undoStack.push(JSON.stringify(ents))
 function pruneSel(){const ids=new Set(ents.map(e=>e.id));sel=new Set([...sel].filter(i=>ids.has(i)));}
 function addEnt(e){e.id=nextId++;e.color=curColor;ents.push(e);return e;}
 function persist(){try{localStorage.setItem(KEY,JSON.stringify({ents,view,opts,curColor}));}catch(_){}}
-function changed(){persist();updatePanel();updateButtons();render();}
+const listeners=[];
+function changed(){persist();updatePanel();updateButtons();render();listeners.forEach(f=>{try{f();}catch(err){console.error(err);}});}
 function delSel(){if(!sel.size)return;checkpoint();ents=ents.filter(e=>!sel.has(e.id));sel.clear();changed();}
 function dupSel(){if(!sel.size)return;checkpoint();const d=P(opts.step*2,-opts.step*2),ns=new Set();
   for(const e of ents.filter(e=>sel.has(e.id))){const c=clone(e);c.id=nextId++;moveEnt(c,d);ents.push(c);ns.add(c.id);}sel=ns;changed();}
@@ -289,9 +365,9 @@ function sanitize(list){
     else if(e.type==='arc'){const c=pt(e.c);if(c&&num(e.r)&&e.r>0&&num(e.a0)&&num(e.a1))n={type:'arc',c,r:e.r,a0:norm(e.a0),a1:norm(e.a1)};}
     else if(e.type==='pline'&&Array.isArray(e.pts)){const pts=e.pts.map(pt);if(pts.length>=2&&pts.every(Boolean))n={type:'pline',pts,closed:!!e.closed};}
     else if(e.type==='dim'){const a=pt(e.a),b=pt(e.b);if(a&&b&&num(e.off))n={type:'dim',a,b,off:e.off};}
-    if(n){n.color=color;out.push(n);}
+    if(n){n.color=color;n.id=Number.isInteger(e.id)&&e.id>0?e.id:0;out.push(n);}
   }
-  out.forEach((e,i)=>e.id=i+1);return out;
+  const used=new Set();let mx=out.reduce((m,e)=>Math.max(m,e.id),0);out.forEach(e=>{if(!e.id||used.has(e.id))e.id=++mx;used.add(e.id);});return out;
 }
 function sample(){
   // 예제: 120×80 브래킷 플레이트
@@ -832,6 +908,7 @@ function escape(){if(drag&&drag.kind==='grip'){const i=ents.findIndex(e=>e.id===
 addEventListener('keydown',ev=>{
   const inField=ev.target.matches&&ev.target.matches('input,textarea,select');
   if(!$('#modal').hidden){if(ev.key==='Escape')closeModal();return;}
+  if(document.body.dataset.workspace==='3d')return;
   if(ev.key==='Shift'&&!shiftDown){shiftDown=true;if(mouse.in){computeCursor();render();}}
   if(inField)return;
   const k=ev.key,mod=ev.ctrlKey||ev.metaKey;
@@ -870,7 +947,7 @@ let newArmed=0;
 $('#bNew').onclick=()=>{const b=$('#bNew');
   if(!newArmed){newArmed=setTimeout(()=>{newArmed=0;b.textContent='새 도면';b.classList.remove('danger');},3000);b.textContent='한 번 더 눌러 지우기';b.classList.add('danger');return;}
   clearTimeout(newArmed);newArmed=0;b.textContent='새 도면';b.classList.remove('danger');
-  checkpoint();ents=[];sel.clear();draft=null;changed();updatePrompt('새 도면을 시작했습니다 · Ctrl+Z로 되돌릴 수 있어요');};
+  checkpoint();ents=[];sel.clear();draft=null;changed();setModel({features:[]});updatePrompt('새 도면을 시작했습니다 · 스케치는 Ctrl+Z로 되돌릴 수 있어요');};
 
 // ---------- export / import ----------
 function toDXF(){
@@ -891,24 +968,47 @@ function toDXF(){
   g(0,'ENDSEC');g(0,'EOF');return o.join('\n');
 }
 let modalAct=null;
-function openModal(title,hint,text,actLabel,act,pick){
+const canDownload=(()=>{try{return window.top===window.self;}catch(_){return false;}})();
+let dlName='';
+function openModal(title,hint,text,actLabel,act,pick,fname){
+  dlName=fname||'';$('#mDl').hidden=!(canDownload&&fname);
   $('#mTitle').textContent=title;$('#mHint').textContent=hint;$('#mText').value=text;$('#mText').readOnly=!pick;
   $('#mAct').textContent=actLabel;modalAct=act;$('#mPick').hidden=!pick;$('#modal').hidden=false;setTimeout(()=>(pick?$('#mText'):$('#mAct')).focus(),0);
 }
 function closeModal(){$('#modal').hidden=true;}
 function copyText(){const t=$('#mText');const done=()=>{$('#mAct').textContent='복사됨';setTimeout(()=>$('#mAct').textContent='복사',1500);};
   try{navigator.clipboard.writeText(t.value).then(done,()=>{t.select();$('#mAct').textContent='Ctrl+C로 복사하세요';});}catch(_){t.select();$('#mAct').textContent='Ctrl+C로 복사하세요';}}
-$('#bDxf').onclick=()=>openModal('DXF 내보내기','AutoCAD R12 형식입니다. 복사해서 .dxf 파일로 저장하면 AutoCAD, LibreCAD, FreeCAD 등에서 열 수 있습니다.',toDXF(),'복사',copyText);
-$('#bJson').onclick=()=>openModal('JSON 저장','도면 전체 데이터입니다. 복사해서 .json 파일로 보관했다가 [불러오기]로 다시 열 수 있습니다.',JSON.stringify({app:'draftline',version:1,ents:ents.map(({id,...r})=>r)},null,1),'복사',copyText);
+$('#bDxf').onclick=()=>openModal('DXF 내보내기','AutoCAD R12 형식입니다. 복사해서 .dxf 파일로 저장하면 AutoCAD, LibreCAD, FreeCAD 등에서 열 수 있습니다.',toDXF(),'복사',copyText,false,'draftline.dxf');
+$('#bJson').onclick=()=>openModal('JSON 저장','스케치와 3D 모델 전체 데이터입니다. 복사해서 .json 파일로 보관했다가 [불러오기]로 다시 열 수 있습니다.',JSON.stringify({app:'draftline',version:2,ents,model:getModel()},null,1),'복사',copyText,false,'draftline.json');
 $('#bOpen').onclick=()=>openModal('불러오기','JSON 내용을 붙여넣거나 파일을 선택하세요. 현재 도면은 바뀌지만 Ctrl+Z로 되돌릴 수 있습니다.','','불러오기',()=>{
   let d;try{d=JSON.parse($('#mText').value);}catch(_){$('#mHint').textContent='JSON 형식이 올바르지 않습니다. 내용을 확인해 주세요.';return;}
   const list=sanitize(Array.isArray(d)?d:d&&d.ents);if(!list.length){$('#mHint').textContent='불러올 수 있는 객체가 없습니다.';return;}
-  checkpoint();ents=list;nextId=list.length+1;sel.clear();draft=null;closeModal();changed();fit();updatePrompt(`${list.length}개 객체를 불러왔습니다`);
+  checkpoint();ents=list;nextId=list.reduce((m,e)=>Math.max(m,e.id),0)+1;sel.clear();draft=null;closeModal();changed();fit();if(d&&d.model)setModel(d.model);updatePrompt(`${list.length}개 객체를 불러왔습니다`);
 },true);
 $('#mPick').onclick=()=>$('#mFile').click();
 $('#mFile').onchange=()=>{const f=$('#mFile').files[0];if(!f)return;const r=new FileReader();r.onload=()=>{$('#mText').value=r.result;};r.readAsText(f);$('#mFile').value='';};
+$('#mDl').onclick=()=>{const u=URL.createObjectURL(new Blob([$('#mText').value],{type:'text/plain'}));const a=document.createElement('a');a.href=u;a.download=dlName;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1000);};
 $('#mClose').onclick=closeModal;$('#mAct').onclick=()=>modalAct&&modalAct();
 $('#modal').addEventListener('pointerdown',ev=>{if(ev.target.id==='modal')closeModal();});
+
+// ---------- workspace & 3D bridge ----------
+const MODEL_KEY='draftline.model.v1';
+function getModel(){if(window.Draftline3D)return window.Draftline3D.getState();try{return JSON.parse(localStorage.getItem(MODEL_KEY)||'null');}catch(_){return null;}}
+function setModel(m){if(window.Draftline3D)window.Draftline3D.setState(m);else{try{localStorage.setItem(MODEL_KEY,JSON.stringify(m&&Array.isArray(m.features)?m:{features:[],nextFid:1,props:{}}));}catch(_){}}}
+window.Draftline={getEnts:()=>ents,onChange:f=>listeners.push(f),arcSweep,
+  openText:(title,hint,text,fname)=>openModal(title,hint,text,'복사',copyText,false,fname)};
+let m3d=null;
+function setWS(ws){
+  document.body.dataset.workspace=ws;
+  document.querySelectorAll('.ws-btn').forEach(b=>b.setAttribute('aria-pressed',b.dataset.wsv===ws));
+  try{localStorage.setItem('draftline.ws',ws);}catch(_){}
+  if(ws==='3d'&&!m3d){
+    m3d=import('./model3d.js').catch(err=>{m3d=null;$('#panel3d').innerHTML='<section><h2>3D 엔진을 불러오지 못했습니다</h2><p class="hint">인터넷 연결을 확인한 뒤 모델 탭을 다시 눌러 주세요.</p><p class="hint"></p></section>';$('#panel3d').querySelectorAll('.hint')[1].textContent=String(err&&err.message||err);});
+  }
+  dispatchEvent(new CustomEvent('draftline:ws',{detail:ws}));
+  if(ws==='2d'){resize();render();}
+}
+document.querySelectorAll('.ws-btn').forEach(b=>b.addEventListener('click',()=>setWS(b.dataset.wsv)));
 
 // ---------- boot ----------
 function resize(){const r=stage.getBoundingClientRect();dpr=window.devicePixelRatio||1;W=r.width;H=r.height;cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);
@@ -918,5 +1018,6 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change',render);
 new MutationObserver(render).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
 if(document.fonts)document.fonts.ready.then(render);
 load();syncToggles();setTool('select');updatePanel();updateButtons();resize();
+let ws0='2d';try{ws0=localStorage.getItem('draftline.ws')==='3d'?'3d':'2d';}catch(_){}setWS(ws0);
 })();
 </script>
