@@ -1177,7 +1177,7 @@ function renderPanel() {
       <p class="hint" style="margin-top:10px">화면에서 놓을 자리를 클릭하세요. 다른 바디 윗면을 누르면 그 위에 올라갑니다.</p><div class="row"><button class="btn" id="placeCancel">취소 (Esc)</button></div></section>`;
     panel.innerHTML = h; return;
   }
-  let h = `<section><h2>도형</h2><div class="shapes"><button class="shape" draggable="true" data-shape="box" title="상자 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M3 7l7-4 7 4v7l-7 4-7-4z"/><path d="M3 7l7 4 7-4M10 11v7"/></svg><span>상자</span></button><button class="shape" draggable="true" data-shape="cylinder" title="원통 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="5" rx="6" ry="2.2"/><path d="M4 5v10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2V5"/></svg><span>원통</span></button><button class="shape" draggable="true" data-shape="sphere" title="구 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><ellipse cx="10" cy="10" rx="7" ry="2.5"/></svg><span>구</span></button><button class="shape" draggable="true" data-shape="cone" title="원뿔 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M10 3L4 15M10 3l6 12"/><ellipse cx="10" cy="15" rx="6" ry="2"/></svg><span>원뿔</span></button><button class="shape" draggable="true" data-shape="torus" title="토러스 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="10" rx="7.5" ry="4.5"/><ellipse cx="10" cy="9.5" rx="3" ry="1.4"/></svg><span>토러스</span></button><button class="shape" draggable="true" data-shape="wedge" title="쐐기 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M3 16h14L3 5z"/><path d="M3 5l4-2 10 11"/></svg><span>쐐기</span></button><button class="shape" draggable="true" data-shape="pyramid" title="피라미드 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M10 3L3 15l7 2 7-2z"/><path d="M10 3v14"/></svg><span>피라미드</span></button><button class="shape" draggable="true" data-shape="tube" title="튜브 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="5" rx="6" ry="2.2"/><ellipse cx="10" cy="5" rx="3" ry="1.1"/><path d="M4 5v10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2V5"/></svg><span>튜브</span></button><button class="shape" draggable="true" data-shape="hemisphere" title="반구 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M3 13a7 7 0 0114 0z"/><ellipse cx="10" cy="13" rx="7" ry="2"/></svg><span>반구</span></button><button class="shape" data-shape="relief" title="이미지 입체 — 사진의 밝기를 높이로 바꾼 부조(리소페인)"><svg viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="1"/><circle cx="7.5" cy="8.5" r="1.5"/><path d="M3 14l4-4 3 3 3-3 4 4"/></svg><span>이미지</span></button></div><p class="hint" style="margin-top:6px">누르고 치수를 정한 뒤 화면을 클릭해 놓습니다. 화면으로 끌어다 놓으면 기본 크기로 바로 놓입니다.</p></section>`;
+  let h = `<section><h2>도형</h2><div class="shapes"><button class="shape" draggable="true" data-shape="box" title="상자 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M3 7l7-4 7 4v7l-7 4-7-4z"/><path d="M3 7l7 4 7-4M10 11v7"/></svg><span>상자</span></button><button class="shape" draggable="true" data-shape="cylinder" title="원통 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="5" rx="6" ry="2.2"/><path d="M4 5v10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2V5"/></svg><span>원통</span></button><button class="shape" draggable="true" data-shape="sphere" title="구 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><ellipse cx="10" cy="10" rx="7" ry="2.5"/></svg><span>구</span></button><button class="shape" draggable="true" data-shape="cone" title="원뿔 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M10 3L4 15M10 3l6 12"/><ellipse cx="10" cy="15" rx="6" ry="2"/></svg><span>원뿔</span></button><button class="shape" draggable="true" data-shape="torus" title="토러스 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="10" rx="7.5" ry="4.5"/><ellipse cx="10" cy="9.5" rx="3" ry="1.4"/></svg><span>토러스</span></button><button class="shape" draggable="true" data-shape="wedge" title="쐐기 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M3 16h14L3 5z"/><path d="M3 5l4-2 10 11"/></svg><span>쐐기</span></button><button class="shape" draggable="true" data-shape="pyramid" title="피라미드 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M10 3L3 15l7 2 7-2z"/><path d="M10 3v14"/></svg><span>피라미드</span></button><button class="shape" draggable="true" data-shape="tube" title="튜브 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><ellipse cx="10" cy="5" rx="6" ry="2.2"/><ellipse cx="10" cy="5" rx="3" ry="1.1"/><path d="M4 5v10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2V5"/></svg><span>튜브</span></button><button class="shape" draggable="true" data-shape="hemisphere" title="반구 — 클릭하거나 화면으로 끌어다 놓기"><svg viewBox="0 0 20 20"><path d="M3 13a7 7 0 0114 0z"/><ellipse cx="10" cy="13" rx="7" ry="2"/></svg><span>반구</span></button><button class="shape" data-shape="relief" title="이미지 입체 — 사진의 밝기를 높이로 바꾼 부조(리소페인)"><svg viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="1"/><circle cx="7.5" cy="8.5" r="1.5"/><path d="M3 14l4-4 3 3 3-3 4 4"/></svg><span>이미지</span></button></div><p class="hint" style="margin-top:6px">누르거나 화면으로 끌어다 놓으면 먼저 치수를 묻습니다. 치수를 입력하고 Enter → 화면을 클릭해 놓습니다 (끌어다 놓았으면 그 자리에 바로).</p></section>`;
   h += `<section><h2>브라우저</h2><div class="plist">`;
   h += `<div class="brow"><button class="eye" data-eye="sketch" aria-pressed="${view.sketch}" title="스케치 보이기/숨기기">${view.sketch ? '◉' : '○'}</button><span>스케치 (XY)</span><span class="muted">${regions.length}개 프로파일</span></div>`;
   bodies.forEach((b, i) => {
@@ -1371,7 +1371,42 @@ function armPlace(type, extra) {
   const f = { ...clone(DEFAULTS[type]), ...(extra || {}), op: 'new' };
   placing = { type, f, hole: false, pos: null };
   selectOnly(null); updateGhost(); rebuildScene(); renderPanel();
-  flash('치수를 정한 뒤 화면에서 놓을 자리를 클릭하세요 (Esc 취소)');
+  flash('화면에서 놓을 자리를 클릭하세요 — 치수는 오른쪽에서 더 고칠 수 있습니다 (Esc 취소)');
+}
+// 도형을 넣을 때는 무엇보다 먼저 치수를 묻는 창을 띄움 → 확인하면 (끌어다 놓은 자리가 있으면 바로) 배치
+const DIMS_KEY = KEY + '.dims';
+let lastDims = {}; try { lastDims = JSON.parse(localStorage.getItem(DIMS_KEY) || '{}') || {}; } catch (_) {}
+function askDims(type, extra, at) {
+  if (editing) cancelEdit(false); if (placing) endPlace(); measureOff();
+  const f = { ...clone(DEFAULTS[type]), ...(lastDims[type] || {}), ...(extra || {}), op: 'new' };
+  const defs = fieldDefs({ type, ...f }).filter(d => (d.t === 'num' || d.t === 'chk') && !['x', 'y', 'z'].includes(d.k));
+  let h = `<p class="hint">${at ? '치수를 입력하면 끌어다 놓은 자리에 바로 놓입니다.' : '치수를 입력하고 확인을 누른 뒤, 화면에서 놓을 자리를 클릭하세요.'} 단위 mm · Enter 확인 · Esc 취소</p><div class="fields dimf">`;
+  for (const d of defs) h += d.t === 'chk' ? `<label for="dm-${d.k}">${d.l}</label><input id="dm-${d.k}" data-dm="${d.k}" type="checkbox" ${f[d.k] ? 'checked' : ''} style="width:auto;justify-self:start">`
+    : `<label for="dm-${d.k}">${d.l}</label><input id="dm-${d.k}" data-dm="${d.k}" inputmode="decimal" autocomplete="off" value="${esc(f[d.k])}">`;
+  h += `<label for="dm-hole">구멍으로</label><input id="dm-hole" type="checkbox" style="width:auto;justify-self:start"></div>`;
+  if (type === 'relief' && f.grid) h += `<p class="hint">이미지 ${f.grid.w}×${f.grid.h} 칸</p>`;
+  h += `<p class="dlg-err" id="dmErr"></p>`;
+  const ok = () => {
+    const nf = { ...f }, err = $('#dmErr');
+    for (const el of document.querySelectorAll('[data-dm]')) {
+      if (el.type === 'checkbox') { nf[el.dataset.dm] = el.checked; continue; }
+      const v = +el.value.replace(',', '.');
+      if (el.value.trim() === '' || !isFinite(v)) { err.textContent = `${el.previousElementSibling.textContent}: 숫자를 입력하세요`; el.focus(); el.select(); return; }
+      if (v < 0 || (v === 0 && !['r2', 'r1'].includes(el.dataset.dm))) { err.textContent = `${el.previousElementSibling.textContent}: 0보다 큰 값을 입력하세요`; el.focus(); el.select(); return; }
+      nf[el.dataset.dm] = v;
+    }
+    try { toolGeom({ type, ...nf, x: 0, y: 0, z: 0 }, D.getEnts()); } catch (e2) { err.textContent = e2.message; return; }
+    const hole = $('#dm-hole').checked;
+    const keep = {}; for (const d of defs) keep[d.k] = nf[d.k]; lastDims[type] = keep; try { localStorage.setItem(DIMS_KEY, JSON.stringify(lastDims)); } catch (_) {}
+    closeSheet();
+    if (at) quickAdd(type, at, nf, hole);
+    else { armPlace(type, nf); if (hole) { placing.hole = true; updateGhost(); renderPanel(); } }
+  };
+  openSheet(`${NAMES[type]} 치수`, h, [['취소', closeSheet], ['확인 (Enter)', ok, true]]);
+  xsheet.querySelector('.sheet').classList.add('sm');
+  const body = $('#xsBody');
+  body.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); ok(); } else if (e.key === 'Escape') { e.preventDefault(); closeSheet(); } e.stopPropagation(); };
+  const first = body.querySelector('input[data-dm]:not([type=checkbox])'); if (first) setTimeout(() => { first.focus(); first.select(); }, 0);
 }
 function endPlace() { placing = null; disposeGroup(gGhost); renderPanel(); rebuildScene(); }
 function updateGhost() {
@@ -1392,7 +1427,7 @@ function pickImageFile() {
   const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*';
   inp.onchange = async () => {
     const file = inp.files[0]; if (!file) return;
-    try { const G = await imageToGrid(file); armPlace('relief', { grid: { w: G.w, h: G.h, d: G.d } }); flash(`이미지를 ${G.w}×${G.h} 칸으로 읽었습니다 — 폭·높이를 정하고 화면을 클릭하세요`); }
+    try { const G = await imageToGrid(file); askDims('relief', { grid: { w: G.w, h: G.h, d: G.d } }); }
     catch (err) { flash(err.message); }
   };
   inp.click();
@@ -1494,7 +1529,7 @@ function openSheet(title, body, acts = []) {
   for (const [label, fn, primary] of acts) { const b = document.createElement('button'); b.className = 'btn' + (primary ? ' primary' : ''); b.textContent = label; b.onclick = fn; box.appendChild(b); }
   xsheet.hidden = false;
 }
-function closeSheet() { xsheet.hidden = true; $('#xsBody').innerHTML = ''; }
+function closeSheet() { xsheet.hidden = true; $('#xsBody').innerHTML = ''; $('#xsBody').onkeydown = null; xsheet.querySelector('.sheet').classList.remove('sm'); }
 $('#xsClose').onclick = closeSheet;
 xsheet.addEventListener('pointerdown', ev => { if (ev.target === xsheet) closeSheet(); });
 function download(name, data, type) {
@@ -1723,7 +1758,7 @@ panel.addEventListener('click', ev => {
   if (t.dataset.cmd) { command(t.dataset.cmd); return; }
   if (t.dataset.shape) {
     if (t.dataset.shape === 'relief') { pickImageFile(); return; }
-    armPlace(t.dataset.shape); return;
+    askDims(t.dataset.shape); return;
   }
   if (t.id === 'placeCancel') { endPlace(); return; }
   if (t.id === 'clashOff') { clash = null; rebuildScene(); renderPanel(); return; }
@@ -1747,11 +1782,12 @@ host.addEventListener('drop', ev => {
   ev.preventDefault(); const d = ev.dataTransfer.getData('text/plain'); if (!d.startsWith('shape:')) return;
   const type = d.slice(6); if (!DEFAULTS[type]) return;
   const r = renderer.domElement.getBoundingClientRect(); ndc.set((ev.clientX - r.left) / r.width * 2 - 1, -(ev.clientY - r.top) / r.height * 2 + 1); ray.setFromCamera(ndc, camera);
-  const p = ray.ray.intersectPlane(new THREE.Plane(V3(0, 0, 1), 0), V3()); quickAdd(type, p || null);
+  const p = ray.ray.intersectPlane(new THREE.Plane(V3(0, 0, 1), 0), V3()); askDims(type, null, p || controls.target.clone());
 });
 tl.addEventListener('click', ev => { const c = ev.target.closest('[data-fid]'); if (c) editFeature(+c.dataset.fid); });
 document.querySelectorAll('[data-cmd3d]').forEach(b => b.addEventListener('click', () => command(b.dataset.cmd3d)));
 function command(c) {
+  if (PRIMS.includes(c)) return askDims(c);
   if (NAMES[c]) return startFeature(c);
   switch (c) {
     case 'undo': return undo();
