@@ -112,6 +112,24 @@ body:not([data-workspace="3d"]) .only3d{display:none!important}
 .segs button[aria-pressed="true"]{background:var(--panel);color:var(--fg);box-shadow:0 0 0 1px var(--line)}
 .aligns{display:grid;grid-template-columns:auto repeat(3,minmax(0,1fr));gap:4px;align-items:center;font-size:12px;color:var(--muted)}
 .aligns .btn{height:28px;padding:0 4px;font-size:12px}
+.sheet.xs{width:min(1180px,100%);max-height:94%}
+#xsBody{overflow:auto;min-height:0;flex:1;display:flex;flex-direction:column;gap:10px}
+.drawing{background:#fff;border:1px solid var(--line);border-radius:4px}
+.drawing svg{display:block;width:100%;height:auto}
+.xtable{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+.xtable th,.xtable td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left}
+.xtable th{color:var(--muted);font-weight:500;font-size:12px}
+.xtable td.n{text-align:right;font-family:var(--mono)}
+.xtable tfoot td{font-weight:600;border-bottom:0}
+#xsBody textarea{min-height:300px;font-family:var(--mono);font-size:12px;background:var(--canvas);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:8px;resize:vertical;tab-size:2}
+#xsBody pre{margin:0;font-family:var(--mono);font-size:12px;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:8px;max-height:160px;overflow:auto;white-space:pre-wrap}
+#xsBody pre.err{color:var(--c1)}
+#xsBody img{max-width:100%;border:1px solid var(--line);border-radius:4px;align-self:center}
+.legend{display:grid;grid-template-columns:auto 1fr;gap:4px 8px;font-size:12px;align-items:center;margin-top:8px}
+.legend i{width:14px;height:14px;border-radius:3px;display:inline-block}
+.clash{display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:5px 6px;border-radius:4px;cursor:pointer}
+.clash:hover{background:var(--hover)}
+.clash b{font-family:var(--mono);font-weight:500;color:var(--c1)}
 @media (max-width:1600px){.tb kbd{display:none}}
 @media (max-width:1560px){[aria-label="수정 도구"] .tb .lbl,[aria-label="입체와 이미지"] .tb .lbl{display:none}}
 @media (max-width:1300px){.brand{display:none}}
@@ -185,6 +203,13 @@ body:not([data-workspace="3d"]) .only3d{display:none!important}
       <button class="tb" data-cmd3d="right" title="오른쪽에서 보기">우측</button>
       <button class="tb" data-cmd3d="fit" title="화면 맞춤 (F)"><svg viewBox="0 0 20 20"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4"/></svg></button>
     </div>
+    <div class="group only3d" role="toolbar" aria-label="분석과 도면">
+      <button class="tb" data-cmd3d="drawing" title="2D 도면 — 정면·평면·우측면·등각 투상도 자동 생성"><svg viewBox="0 0 20 20"><rect x="2.5" y="3.5" width="15" height="13"/><path d="M5 7h4v3H5zM11 7h4v3h-4zM5 12h4M12 16v-3h5.5"/></svg><span class="lbl">도면</span></button>
+      <button class="tb" data-cmd3d="clash" title="간섭 검사 — 바디끼리 겹치는 부분 찾기"><svg viewBox="0 0 20 20"><rect x="3" y="3" width="9" height="9"/><rect x="8" y="8" width="9" height="9"/><path d="M8 8h4v4H8z" fill="currentColor" stroke="none" opacity=".45"/></svg><span class="lbl">간섭</span></button>
+      <button class="tb" data-cmd3d="explode" aria-pressed="false" title="분해도 — 바디를 중심에서 벌려 보기 (X)"><svg viewBox="0 0 20 20"><rect x="7.5" y="7.5" width="5" height="5"/><path d="M5 5L2.5 2.5M15 5l2.5-2.5M5 15l-2.5 2.5M15 15l2.5 2.5"/></svg><span class="lbl">분해</span></button>
+      <button class="tb" data-cmd3d="bom" title="부품표 (BOM) — 재질·수량·질량 목록"><svg viewBox="0 0 20 20"><path d="M4 3h12v14H4zM7 7h6M7 10h6M7 13h4"/></svg><span class="lbl">부품표</span></button>
+      <button class="tb" data-cmd3d="script" title="스크립트 — 자바스크립트로 모델을 자동으로 만들기"><svg viewBox="0 0 20 20"><path d="M7 6l-4 4 4 4M13 6l4 4-4 4M11 4l-2 12"/></svg><span class="lbl">스크립트</span></button>
+    </div>
     <div class="group only3d">
       <button class="tb" data-cmd3d="undo" title="실행 취소 (Ctrl+Z)"><svg viewBox="0 0 20 20"><path d="M7 5L3 9l4 4"/><path d="M3 9h9a5 5 0 010 10H9"/></svg></button>
       <button class="tb" data-cmd3d="redo" title="다시 실행 (Ctrl+Y)"><svg viewBox="0 0 20 20"><path d="M13 5l4 4-4 4"/><path d="M17 9H8a5 5 0 000 10h3"/></svg></button>
@@ -194,6 +219,8 @@ body:not([data-workspace="3d"]) .only3d{display:none!important}
     <div class="group">
       <button class="tb only3d" data-cmd3d="stl" title="STL 내보내기 (3D 프린팅)">STL</button>
       <button class="tb only3d" data-cmd3d="obj" title="OBJ 내보내기">OBJ</button>
+      <button class="tb only3d" data-cmd3d="3mf" title="3MF 내보내기 (색상 포함, 3D 프린팅)">3MF</button>
+      <button class="tb only3d" data-cmd3d="png" title="지금 화면을 이미지(PNG)로 저장">PNG</button>
       <button class="tb only2d" id="bDxf" title="DXF 내보내기">DXF</button>
       <button class="tb" id="bJson" title="JSON으로 저장">저장</button>
       <button class="tb" id="bOpen" title="JSON 불러오기">열기</button>
@@ -222,6 +249,12 @@ body:not([data-workspace="3d"]) .only3d{display:none!important}
   </footer>
 </div>
 
+<div class="modal" id="xsheet" hidden>
+  <div class="sheet xs" role="dialog" aria-modal="true" aria-labelledby="xsTitle">
+    <div class="row"><h3 id="xsTitle"></h3><div class="spacer"></div><span class="row" id="xsActs"></span><button class="btn" id="xsClose">닫기</button></div>
+    <div id="xsBody"></div>
+  </div>
+</div>
 <div class="modal" id="modal" hidden>
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="mTitle">
     <h3 id="mTitle"></h3>
@@ -1044,7 +1077,11 @@ $('#bImage').onclick=()=>$('#imgFile').click();
 try{refImg=JSON.parse(localStorage.getItem(IMG_KEY)||'null');if(refImg&&refImg.src)setRefEl();else refImg=null;}catch(_){refImg=null;}
 window.Draftline={getEnts:()=>ents,onChange:f=>listeners.push(f),arcSweep,
   getRefImage:()=>refImg&&refEl&&refEl.naturalWidth?{...refImg,h:refImg.w*refEl.naturalHeight/refEl.naturalWidth}:null,
-  openText:(title,hint,text,fname)=>openModal(title,hint,text,'복사',copyText,false,fname)};
+  openText:(title,hint,text,fname)=>openModal(title,hint,text,'복사',copyText,false,fname),
+  canDownload,
+  // 스크립트용: 스케치에 도형 추가 / 비우기
+  addEnts(list){const s=sanitize(list);if(!s.length)return [];checkpoint();const ids=[];for(const e of s){e.id=nextId++;ents.push(e);ids.push(e.id);}changed();return ids;},
+  clearEnts(){if(!ents.length)return;checkpoint();ents=[];sel.clear();draft=null;changed();}};
 let m3d=null;
 function setWS(ws){
   document.body.dataset.workspace=ws;

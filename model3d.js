@@ -3,7 +3,9 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { Brush, Evaluator, ADDITION, SUBTRACTION, INTERSECTION } from 'three-bvh-csg';
+import { makeDrawing, make3MF } from './extras3d.js';
 
 const D = window.Draftline;
 const KEY = 'draftline.model.v1';
@@ -45,7 +47,9 @@ const DEFAULTS = {
   group: { target: '', solids: [], holes: [] },
 };
 const PRIMS = ['box', 'cylinder', 'sphere', 'cone', 'torus', 'wedge', 'pyramid', 'tube', 'hemisphere', 'relief'];
-const MATERIALS = [['steel', '강철', 7.85], ['al', '알루미늄', 2.70], ['brass', '황동', 8.50], ['abs', 'ABS', 1.04], ['pla', 'PLA', 1.24], ['wood', '나무', 0.60]];
+const MATERIALS = [['steel', '강철', 7.85], ['al', '알루미늄', 2.70], ['brass', '황동', 8.50], ['copper', '구리', 8.96], ['abs', 'ABS', 1.04], ['pla', 'PLA', 1.24], ['wood', '나무', 0.60], ['glass', '유리', 2.50], ['rubber', '고무', 1.20]];
+// 사실적 렌더링용 겉모습 (c 없음 = 바디 색 사용)
+const APPEAR = { steel: { c: '#a9b0b7', m: 1, r: 0.34 }, al: { c: '#d3d7db', m: 1, r: 0.42 }, brass: { c: '#c9a24a', m: 1, r: 0.38 }, copper: { c: '#c47a4c', m: 1, r: 0.32 }, abs: { m: 0, r: 0.45 }, pla: { m: 0, r: 0.35 }, wood: { c: '#a8743f', m: 0, r: 0.72 }, glass: { c: '#eef6f8', glass: true }, rubber: { c: '#2b2e31', m: 0, r: 0.9 } };
 const BODY_COLORS = ['#9aa9b5', '#c9773f', '#5b8fc7', '#6aa36f', '#c8a64a', '#8e6fc1'];
 
 let state = { features: [], nextFid: 1, props: {} };
@@ -60,7 +64,8 @@ let selBody = null, selSet = new Set();
 function selectOnly(id) { selBody = id || null; selSet = new Set(id ? [id] : []); }
 function toggleSel(id) { if (selSet.has(id)) { selSet.delete(id); if (selBody === id) selBody = [...selSet].pop() || null; } else { selSet.add(id); selBody = id; } }
 let regions = [], regionsByKey = new Map(), sketchLinesCache = [];
-let view = { display: 'edges', sketch: true, section: false, secAxis: 'z', secPos: 0, snap: 1 };
+let view = { display: 'edges', sketch: true, section: false, secAxis: 'z', secPos: 0, snap: 1, explode: 0, draftDir: 'z', draftAng: 1 };
+let clash = null;            // 간섭 검사 결과 {pairs:[{a,b,V,geom}], geoms:{id:geom}}
 let measure = { on: false, pts: [] };
 let dirty = true;
 let memo = [];
@@ -81,7 +86,7 @@ function sanitizeState(d) {
   return { features: feats, nextFid, props: d.props && typeof d.props === 'object' ? d.props : {} };
 }
 function persist() {
-  try { localStorage.setItem(KEY, JSON.stringify(state)); localStorage.setItem(KEY + '.view', JSON.stringify({ display: view.display, sketch: view.sketch, snap: view.snap })); } catch (_) {}
+  try { localStorage.setItem(KEY, JSON.stringify(state)); localStorage.setItem(KEY + '.view', JSON.stringify({ display: view.display, sketch: view.sketch, snap: view.snap, draftDir: view.draftDir, draftAng: view.draftAng })); } catch (_) {}
 }
 function checkpoint() { undoS.push(JSON.stringify(state)); if (undoS.length > 100) undoS.shift(); redoS = []; }
 function undo() { if (!undoS.length) return; redoS.push(JSON.stringify(state)); state = JSON.parse(undoS.pop()); editing = null; persist(); regen(); renderPanel(); }
@@ -198,10 +203,34 @@ const triCount = g => g.attributes.position.count / 3;
 
 const EV = new Evaluator(); EV.useGroups = false; EV.attributes = ['position', 'normal'];
 const OPS = { join: ADDITION, cut: SUBTRACTION, intersect: INTERSECTION };
+// 같은 평면에 놓인 면(예: 바디와 높이가 똑같은 구멍)은 CSG가 삼각형을 수만 개로 쪼개며 몇십 초씩 걸림
+// → 도구를 중심 기준으로 아주 조금(축마다 ±CSG_EPS mm) 키워 면이 겹치지 않게 함 (치수 영향 0.001 mm)
+const CSG_EPS = 1e-3;
+function nudgeTool(g) {
+  g.computeBoundingBox(); const bb = g.boundingBox, c = bb.getCenter(V3()), s = bb.getSize(V3());
+  const k = v => v > 1e-6 ? (v + 2 * CSG_EPS) / v : 1;
+  const m = new THREE.Matrix4().makeTranslation(c.x, c.y, c.z).multiply(new THREE.Matrix4().makeScale(k(s.x), k(s.y), k(s.z))).multiply(new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z));
+  const out = g.clone(); out.applyMatrix4(m); return out;
+}
+// 키운 만큼 생긴 0.001 mm 단차를 없애려고, 결과 꼭짓점 좌표가 원래 두 형상의 좌표값 가까이에 있으면 그 값으로 되돌림
+function snapBack(g, ga, gb) {
+  const sets = [[], [], []];
+  for (const src of [ga, gb]) { const a = src.attributes.position.array; for (let i = 0; i < a.length; i++) sets[i % 3].push(a[i]); }
+  const sorted = sets.map(l => Float64Array.from(new Set(l.map(v => Math.round(v * 1e6) / 1e6))).sort());
+  const a = g.attributes.position.array, tol = 2.5 * CSG_EPS;
+  for (let i = 0; i < a.length; i++) {
+    const L = sorted[i % 3], v = a[i]; let lo = 0, hi = L.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (L[m] < v) lo = m; else hi = m; }
+    const c = Math.abs(L[lo] - v) < Math.abs(L[hi] - v) ? L[lo] : L[hi];
+    if (Math.abs(c - v) < tol) a[i] = c;
+  }
+  g.attributes.position.needsUpdate = true;
+  return g;
+}
 function csg(ga, gb, op) {
-  const A = new Brush(ga.clone()), B = new Brush(gb.clone());
+  const A = new Brush(ga.clone()), B = new Brush(nudgeTool(gb));
   A.updateMatrixWorld(); B.updateMatrixWorld();
-  return prep(EV.evaluate(A, B, OPS[op]).geometry);
+  return prep(snapBack(EV.evaluate(A, B, OPS[op]).geometry, ga, gb));
 }
 
 function revolveGeom(regs, axis, angleDeg) {
@@ -765,6 +794,7 @@ function regen() {
   memo = nextMemo;
   selSet = new Set([...selSet].filter(id => findBody(id))); if (selBody && !findBody(selBody)) selBody = [...selSet].pop() || null;
   dirty = false;
+  if (clash && Object.entries(clash.geoms).some(([id, g]) => !findBody(id) || findBody(id).geom !== g)) clash = null;
   rebuildScene(); renderTimeline();
   if (editing) updateDlgStatus(); else renderPanel();
 }
@@ -783,8 +813,13 @@ controls.enableDamping = false; controls.screenSpacePanning = true;
 controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN };
 renderer.domElement.addEventListener('mousedown', e => { if (e.button === 1) e.preventDefault(); });
 controls.addEventListener('change', draw);
-scene.add(new THREE.HemisphereLight(0xffffff, 0x8899aa, 1.4));
+const hemi = new THREE.HemisphereLight(0xffffff, 0x8899aa, 1.4); scene.add(hemi);
 const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(0.6, 0.4, 1); camera.add(key); scene.add(camera);
+// 사실적 렌더링: 주변 환경 반사 + 그림자
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.visible = false; scene.add(sun, sun.target);
+let envTex = null;
+function envMap() { if (!envTex) { const pm = new THREE.PMREMGenerator(renderer); const room = new RoomEnvironment(); room.rotation.x = Math.PI / 2; room.updateMatrixWorld(true); envTex = pm.fromScene(room, 0.04).texture; pm.dispose(); } return envTex; }
 const gBodies = new THREE.Group(), gSketch = new THREE.Group(), gMeasure = new THREE.Group(), gHelpers = new THREE.Group();
 scene.add(gHelpers, gBodies, gSketch, gMeasure);
 const clipPlane = new THREE.Plane(V3(0, 0, -1), 0);
@@ -806,24 +841,45 @@ function rebuildScene() {
   disposeGroup(gBodies); disposeGroup(gSketch);
   const clip = view.section ? [clipPlane] : [];
   if (view.section) { const n = { x: V3(-1, 0, 0), y: V3(0, -1, 0), z: V3(0, 0, -1) }[view.secAxis]; clipPlane.set(n, +view.secPos); }
-  const xray = view.display === 'xray', wire = view.display === 'wire';
+  const xray = view.display === 'xray', wire = view.display === 'wire', real = view.display === 'render', dra = view.display === 'draft';
+  scene.environment = real ? envMap() : null; renderer.toneMapping = real ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping; renderer.toneMappingExposure = real ? 1.2 : 1;
+  hemi.intensity = real ? 0.35 : 1.4; key.intensity = real ? 1.1 : 2.2; sun.visible = real; gHelpers.visible = !real;
+  const exo = explodeOffsets();
   bodies.forEach((b, i) => {
     if (state.props[b.id] && state.props[b.id].hidden) return;
-    const sel = selSet.has(b.id), hole = !!(state.props[b.id] && state.props[b.id].hole);
-    const mat = new THREE.MeshStandardMaterial({
-      color: hole ? '#8d979f' : bodyColor(b, i), roughness: 0.55, metalness: 0.08, side: THREE.DoubleSide, // 불리언 결과에 섞인 뒤집힌 조각 삼각형도 제대로 칠함
-      transparent: xray || wire || hole, opacity: wire ? 0.06 : hole ? 0.32 : xray ? 0.35 : 1, depthWrite: !(xray || wire || hole), clippingPlanes: clip,
-      polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
-      emissive: sel ? new THREE.Color(T.accent) : new THREE.Color(0), emissiveIntensity: sel ? 0.28 : 0,
-    });
-    const mesh = new THREE.Mesh(b.geom, mat); mesh.userData = { bid: b.id, keepGeom: true }; gBodies.add(mesh);
-    if (view.display !== 'shaded') {
+    const sel = selSet.has(b.id), hole = !!(state.props[b.id] && state.props[b.id].hole), ex = exo.get(b.id) || V3();
+    const common = { side: THREE.DoubleSide, clippingPlanes: clip, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+      emissive: sel ? new THREE.Color(T.accent) : new THREE.Color(0), emissiveIntensity: sel ? 0.28 : 0 }; // DoubleSide: 불리언 결과에 섞인 뒤집힌 조각 삼각형도 제대로 칠함
+    let mat, geom = b.geom, own = false;
+    if (dra && !hole) { geom = draftGeom(b.geom); own = true; mat = new THREE.MeshLambertMaterial({ ...common, vertexColors: true }); }
+    else if (real && !hole) {
+      const p = state.props[b.id] || {}, ap = p.mat ? APPEAR[p.mat] : null;
+      geom = smoothGeom(b.geom); own = true; common.envMapIntensity = ap && ap.m ? 1.35 : 1;
+      mat = ap && ap.glass ? new THREE.MeshPhysicalMaterial({ ...common, color: ap.c, metalness: 0, roughness: 0.06, transmission: 1, thickness: 4, ior: 1.5, transparent: true })
+        : new THREE.MeshStandardMaterial({ ...common, color: (ap && ap.c) || bodyColor(b, i), metalness: ap ? ap.m : 0.05, roughness: ap ? ap.r : 0.45 });
+    } else mat = new THREE.MeshStandardMaterial({ ...common, color: hole ? '#8d979f' : bodyColor(b, i), roughness: 0.55, metalness: 0.08,
+      transparent: xray || wire || hole, opacity: wire ? 0.06 : hole ? 0.32 : xray ? 0.35 : 1, depthWrite: !(xray || wire || hole) });
+    const mesh = new THREE.Mesh(geom, mat); mesh.userData = { bid: b.id, keepGeom: !own, ex }; mesh.position.copy(ex);
+    if (real) { mesh.castShadow = true; mesh.receiveShadow = true; }
+    gBodies.add(mesh);
+    if (view.display !== 'shaded' && !real) {
       const eg = new THREE.BufferGeometry(), ep = []; for (const [a, c] of edgeSegs(b.geom, 25)) ep.push(a.x, a.y, a.z, c.x, c.y, c.z);
       eg.setAttribute('position', new THREE.Float32BufferAttribute(ep, 3));
       const ls = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: sel ? T.accent : (wire || hole ? T.ink : '#1e272d'), clippingPlanes: clip, transparent: true, opacity: hole ? 0.45 : wire ? 0.9 : 0.75 }));
-      ls.userData.bidE = b.id; gBodies.add(ls);
+      ls.userData.bidE = b.id; ls.userData.ex = ex; ls.position.copy(ex); gBodies.add(ls);
     }
   });
+  if (real) {
+    const bx = sceneBox(), c = bx.getCenter(V3()), r = Math.max(20, bx.getSize(V3()).length());
+    sun.position.set(c.x + r * 0.6, c.y - r * 0.9, c.z + r * 1.4); sun.target.position.copy(c);
+    const sc = sun.shadow.camera; sc.left = sc.bottom = -r; sc.right = sc.top = r; sc.near = 0.1; sc.far = r * 4; sc.updateProjectionMatrix(); sun.shadow.bias = -0.0005; sun.shadow.normalBias = r * 0.002;
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(r * 8, r * 8), new THREE.ShadowMaterial({ opacity: 0.22 }));
+    ground.position.set(c.x, c.y, bx.min.z - 0.02); ground.receiveShadow = true; gBodies.add(ground);
+  }
+  if (clash) for (const p of clash.pairs) {
+    const m = new THREE.Mesh(p.geom, new THREE.MeshBasicMaterial({ color: T.c1, transparent: true, opacity: 0.75, depthTest: false, side: THREE.DoubleSide }));
+    m.userData.keepGeom = true; m.renderOrder = 8; gBodies.add(m);
+  }
   pickMesh = null;
   if (editing && pickGeom && editing.feat.type === 'shell') {
     pickMesh = new THREE.Mesh(pickGeom, new THREE.MeshBasicMaterial({ visible: false })); pickMesh.userData.keepGeom = true; gBodies.add(pickMesh);
@@ -897,7 +953,7 @@ const gGizmo = new THREE.Group(); scene.add(gGizmo);
 const AXC = ['#d0453a', '#3f9a4b', '#3d72c8'];
 function rebuildGizmo() {
   disposeGroup(gGizmo);
-  if (editing || measure.on || placing || selSet.size !== 1 || gizmoDrag) return;
+  if (editing || measure.on || placing || selSet.size !== 1 || gizmoDrag || view.explode > 0) return;
   const b = findBody(selBody); if (!b || (state.props[b.id] && state.props[b.id].hidden)) return;
   b.geom.computeBoundingBox();
   const bb = b.geom.boundingBox, c = bb.getCenter(V3()), sz = bb.getSize(V3()), d = Math.max(sz.x, sz.y, sz.z, 1), hs = Math.max(0.8, d * 0.04);
@@ -1155,6 +1211,14 @@ function renderPanel() {
       <dt>질량</dt><dd>${fmt(mp.V / 1000 * mat[2])} g</dd><dt>크기</dt><dd>${fmt(sz.x)} × ${fmt(sz.y)} × ${fmt(sz.z)}</dd>
       <dt>무게중심</dt><dd>${fmt(mp.c.x)}, ${fmt(mp.c.y)}, ${fmt(mp.c.z)}</dd><dt>삼각형</dt><dd>${triCount(b.geom).toLocaleString()}</dd></dl><div class="row" style="margin-top:10px"><button class="btn danger" data-cmd="delete">바디 지우기 (Delete)</button></div></section>`;
   }
+  if (clash) {
+    h += `<section><h2>간섭 검사</h2>`;
+    if (!clash.pairs.length) h += `<p class="hint">검사한 바디 ${clash.n}개 사이에 겹치는 부분이 없습니다 ✓</p>`;
+    else { h += `<p class="hint" style="margin-bottom:6px">겹친 곳 ${clash.pairs.length}군데 — 빨간색으로 표시했습니다. 누르면 두 바디를 고릅니다.</p>`;
+      for (const [i, p] of clash.pairs.entries()) h += `<div class="clash" data-clash="${i}"><span>${esc(p.an)} ↔ ${esc(p.bn)}</span><b>${fmt(p.V)} mm³</b></div>`; }
+    if (clash.skipped) h += `<p class="hint">계산하지 못한 쌍 ${clash.skipped}개</p>`;
+    h += `<div class="row" style="margin-top:8px"><button class="btn" data-cmd="clash">다시 검사</button><button class="btn" id="clashOff">결과 지우기</button></div></section>`;
+  }
   if (measure.on) {
     let m = '모델 표면의 두 점을 클릭하세요';
     if (measure.pts.length === 1) m = '두 번째 점을 클릭하세요';
@@ -1162,11 +1226,15 @@ function renderPanel() {
     h += `<section><h2>측정</h2><p class="hint">${m}</p></section>`;
   }
   const box = sceneBox(), ax = { x: 'x', y: 'y', z: 'z' }[view.secAxis];
-  h += `<section><h2>보기</h2><div class="fields"><label for="vSnap">그리드 스냅</label><select id="vSnap">${opts([[0.1, '0.1 mm'], [0.5, '0.5 mm'], [1, '1 mm'], [2, '2 mm'], [5, '5 mm'], [10, '10 mm']], view.snap)}</select><label for="vDisp">표시</label><select id="vDisp">${opts([['edges', '음영 + 모서리'], ['shaded', '음영'], ['xray', '반투명'], ['wire', '와이어프레임']], view.display)}</select>
+  h += `<section><h2>보기</h2><div class="fields"><label for="vSnap">그리드 스냅</label><select id="vSnap">${opts([[0.1, '0.1 mm'], [0.5, '0.5 mm'], [1, '1 mm'], [2, '2 mm'], [5, '5 mm'], [10, '10 mm']], view.snap)}</select><label for="vDisp">표시</label><select id="vDisp">${opts([['edges', '음영 + 모서리'], ['shaded', '음영'], ['render', '사실적 렌더링'], ['xray', '반투명'], ['wire', '와이어프레임'], ['draft', '구배 분석']], view.display)}</select>
     <label for="vSec">단면</label><select id="vSec">${opts([['off', '끄기'], ['x', 'X 방향'], ['y', 'Y 방향'], ['z', 'Z 방향']], view.section ? view.secAxis : 'off')}</select></div>
     ${view.section ? `<input type="range" id="vSecPos" min="${box.min[ax] - 1}" max="${box.max[ax] + 1}" step="0.1" value="${view.secPos}" style="width:100%;margin-top:8px" aria-label="단면 위치"><p class="hint">단면 위치 ${fmt(view.secPos)} mm</p>` : ''}
+    ${view.display === 'render' ? `<p class="hint" style="margin-top:8px">바디의 <b>재질</b>(강철·황동·유리 등)에 따라 겉모습이 바뀝니다. PNG 버튼으로 이미지를 저장하세요.</p>` : ''}
+    ${view.display === 'draft' ? `<div class="fields" style="margin-top:8px"><label for="vDDir">빼는 방향</label><select id="vDDir">${opts([['z', '+Z (위로)'], ['-z', '−Z (아래로)'], ['x', '+X'], ['-x', '−X'], ['y', '+Y'], ['-y', '−Y']], view.draftDir)}</select><label for="vDAng">최소 구배°</label><input id="vDAng" inputmode="decimal" value="${view.draftAng}"></div>
+      <div class="legend"><i style="background:#3fa34d"></i><span>양(+) 구배 — 금형에서 잘 빠짐</span><i style="background:#e0b23a"></i><span>구배 부족 (±${fmt(view.draftAng)}° 안, 수직에 가까움)</span><i style="background:#d0453a"></i><span>음(−) 구배 — 언더컷, 반대쪽 금형</span></div>` : ''}
+    <label class="hint" for="vExp" style="display:block;margin-top:10px">분해도 ${Math.round(view.explode * 100)}% (X)</label><input type="range" id="vExp" min="0" max="1.5" step="0.01" value="${view.explode}" style="width:100%">
     </section>`;
-  h += `<section><h2>도움말</h2><div class="keys"><b>바디 끌기</b><span>바닥 위에서 옮기기</span><b>빈 곳 끌기</b><span>화면 회전</span><b>오른쪽 끌기</b><span>화면 이동</span><b>휠</b><span>확대·축소</span><b>Shift+클릭</b><span>여러 개 선택</span><b>방향키</b><span>조금씩 옮기기 (Shift ×10)</span><b>PgUp/PgDn</b><span>위아래로</span><b>D</b><span>바닥에 놓기</span><b>H</b><span>솔리드/구멍 전환</span><b>Ctrl+D/G</b><span>복제 / 그룹</span><b>Ctrl+A</b><span>모두 선택</span><b>E</b><span>돌출</span><b>Delete</b><span>선택한 바디 지우기</span><b>Ctrl+Z/Y</b><span>실행 취소/다시</span><b>Esc</b><span>취소</span></div>
+  h += `<section><h2>도움말</h2><div class="keys"><b>바디 끌기</b><span>바닥 위에서 옮기기</span><b>빈 곳 끌기</b><span>화면 회전</span><b>오른쪽 끌기</b><span>화면 이동</span><b>휠</b><span>확대·축소</span><b>Shift+클릭</b><span>여러 개 선택</span><b>방향키</b><span>조금씩 옮기기 (Shift ×10)</span><b>PgUp/PgDn</b><span>위아래로</span><b>D</b><span>바닥에 놓기</span><b>H</b><span>솔리드/구멍 전환</span><b>Ctrl+D/G</b><span>복제 / 그룹</span><b>Ctrl+A</b><span>모두 선택</span><b>E</b><span>돌출</span><b>X</b><span>분해도 켜기/끄기</span><b>Delete</b><span>선택한 바디 지우기</span><b>Ctrl+Z/Y</b><span>실행 취소/다시</span><b>Esc</b><span>취소</span></div>
     <p class="hint" style="margin-top:8px">타임라인의 피처를 누르면 값을 고칠 수 있고, 스케치를 바꾸면 모델이 다시 계산됩니다.</p></section>`;
   panel.innerHTML = h;
 }
@@ -1331,7 +1399,7 @@ function pickImageFile() {
 }
 function measureOff() { if (measure.on) { measure.on = false; measure.pts = []; syncToolButtons(); rebuildMeasure(); } }
 function flash(msg) { const el = $('#flash3d'); if (!el) return; el.textContent = msg; el.hidden = false; clearTimeout(flash.t); flash.t = setTimeout(() => el.hidden = true, 2800); }
-function syncToolButtons() { document.querySelectorAll('[data-cmd3d="measure"]').forEach(b => b.setAttribute('aria-pressed', measure.on)); }
+function syncToolButtons() { document.querySelectorAll('[data-cmd3d="measure"]').forEach(b => b.setAttribute('aria-pressed', measure.on)); document.querySelectorAll('[data-cmd3d="explode"]').forEach(b => b.setAttribute('aria-pressed', view.explode > 0)); }
 
 function exportMesh(kind) {
   const list = bodies.filter(b => selBody ? b.id === selBody : !(state.props[b.id] && state.props[b.id].hidden));
@@ -1342,9 +1410,270 @@ function exportMesh(kind) {
   D.openText(`${kind.toUpperCase()} 내보내기`, `${what}를 mm 단위로 내보냈습니다. ${kind === 'stl' ? '3D 프린터 슬라이서(Cura, PrusaSlicer 등)에서 열 수 있습니다.' : 'Blender 등 3D 프로그램에서 열 수 있습니다.'}`, text, `draftline.${kind}`);
 }
 
+// ---------------------------------------------------------------- 분해도 · 구배 분석 · 간섭 검사
+function explodeOffsets() {
+  const out = new Map(); if (!(view.explode > 0)) return out;
+  const vis = bodies.filter(b => !(state.props[b.id] && state.props[b.id].hidden)); if (vis.length < 2) return out;
+  const all = new THREE.Box3(), cs = new Map();
+  for (const b of vis) { b.geom.computeBoundingBox(); all.union(b.geom.boundingBox); cs.set(b.id, b.geom.boundingBox.getCenter(V3())); }
+  const C = all.getCenter(V3()), k = view.explode * 1.2;
+  for (const [id, c] of cs) out.set(id, c.sub(C).multiplyScalar(k));
+  return out;
+}
+function animateExplode(to) {
+  if (editing) { flash('먼저 편집 중인 피처를 확인하거나 취소하세요'); return; }
+  const vis = bodies.filter(b => !(state.props[b.id] && state.props[b.id].hidden));
+  if (to > 0 && vis.length < 2) { flash('분해도는 바디가 2개 이상일 때 쓸 수 있습니다'); return; }
+  const from = view.explode, t0 = performance.now();
+  const step = now => { const t = Math.min(1, (now - t0) / 450), e = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2; view.explode = from + (to - from) * e; rebuildScene(); if (t < 1) requestAnimationFrame(step); else { syncToolButtons(); renderPanel(); } };
+  requestAnimationFrame(step);
+}
+// 렌더링용 부드러운 법선: 같은 위치의 꼭짓점끼리, 면 각도가 35° 안이면 법선을 평균 (곡면은 매끈, 모서리는 날카롭게)
+const smoothCache = new WeakMap();
+function smoothGeom(g) {
+  let nrm = smoothCache.get(g);
+  if (!nrm) {
+    const a = g.attributes.position.array, nt = a.length / 9, fn = new Float32Array(nt * 3), fw = new Float32Array(nt * 3), groups = new Map(), cosT = Math.cos(35 * DEG);
+    const p = V3(), q = V3(), r = V3(), n = V3(), t = V3(), R4 = v => Math.round(v * 1e4);
+    for (let f = 0; f < nt; f++) {
+      const i = f * 9; p.set(a[i], a[i + 1], a[i + 2]); q.set(a[i + 3], a[i + 4], a[i + 5]); r.set(a[i + 6], a[i + 7], a[i + 8]);
+      n.subVectors(q, p).cross(t.subVectors(r, p)); fw[f * 3] = n.x; fw[f * 3 + 1] = n.y; fw[f * 3 + 2] = n.z; n.normalize(); fn[f * 3] = n.x; fn[f * 3 + 1] = n.y; fn[f * 3 + 2] = n.z;
+      for (let k = 0; k < 3; k++) { const j = i + k * 3, key = R4(a[j]) + ',' + R4(a[j + 1]) + ',' + R4(a[j + 2]); let l = groups.get(key); if (!l) groups.set(key, l = []); l.push(f * 3 + k); }
+    }
+    nrm = new Float32Array(a.length);
+    for (const l of groups.values()) for (const v of l) {
+      const f = (v / 3) | 0; let x = 0, y = 0, z = 0;
+      for (const u of l) { const h = (u / 3) | 0; if (fn[f * 3] * fn[h * 3] + fn[f * 3 + 1] * fn[h * 3 + 1] + fn[f * 3 + 2] * fn[h * 3 + 2] >= cosT) { x += fw[h * 3]; y += fw[h * 3 + 1]; z += fw[h * 3 + 2]; } }
+      const L = Math.hypot(x, y, z) || 1; nrm[v * 3] = x / L; nrm[v * 3 + 1] = y / L; nrm[v * 3 + 2] = z / L;
+    }
+    smoothCache.set(g, nrm);
+  }
+  const out = new THREE.BufferGeometry(); out.setAttribute('position', g.attributes.position); out.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  return out;
+}
+function draftGeom(g) {
+  const src = g.index ? g.toNonIndexed() : g, a = src.attributes.position.array, col = new Float32Array(a.length);
+  const dir = { z: V3(0, 0, 1), '-z': V3(0, 0, -1), x: V3(1, 0, 0), '-x': V3(-1, 0, 0), y: V3(0, 1, 0), '-y': V3(0, -1, 0) }[view.draftDir] || V3(0, 0, 1);
+  const th = Math.sin((+view.draftAng || 0) * DEG), G = new THREE.Color('#3fa34d'), Y = new THREE.Color('#e0b23a'), Rr = new THREE.Color('#d0453a');
+  const p = V3(), q = V3(), r = V3(), n = V3(), t = V3();
+  for (let i = 0; i < a.length; i += 9) {
+    p.set(a[i], a[i + 1], a[i + 2]); q.set(a[i + 3], a[i + 4], a[i + 5]); r.set(a[i + 6], a[i + 7], a[i + 8]);
+    n.subVectors(q, p).cross(t.subVectors(r, p)).normalize();
+    const s = n.dot(dir), c = s >= th - 1e-9 ? G : s <= -th + 1e-9 && th > 0 ? Rr : Math.abs(s) < th ? Y : s > 0 ? G : Rr;
+    for (let k = 0; k < 3; k++) { col[i + k * 3] = c.r; col[i + k * 3 + 1] = c.g; col[i + k * 3 + 2] = c.b; }
+  }
+  const out = new THREE.BufferGeometry(); out.setAttribute('position', src.attributes.position); out.setAttribute('normal', src.attributes.normal || (src.computeVertexNormals(), src.attributes.normal)); out.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return out;
+}
+const isHole = b => !!(state.props[b.id] && state.props[b.id].hole);
+function runClash() {
+  if (editing) { flash('먼저 편집 중인 피처를 확인하거나 취소하세요'); return; }
+  const pool = (selSet.size >= 2 ? selected() : bodies).filter(b => !isHole(b) && !(state.props[b.id] && state.props[b.id].hidden));
+  if (pool.length < 2) { flash('간섭 검사는 바디가 2개 이상 있어야 합니다'); return; }
+  flash('간섭 검사 중…');
+  setTimeout(() => {
+    const pairs = [], geoms = {}; let skipped = 0;
+    pool.forEach(b => { b.geom.computeBoundingBox(); geoms[b.id] = b.geom; });
+    for (let i = 0; i < pool.length; i++) for (let j = i + 1; j < pool.length; j++) {
+      const A = pool[i], B = pool[j], bb = A.geom.boundingBox.clone().intersect(B.geom.boundingBox);
+      if (bb.isEmpty()) continue; const s = bb.getSize(V3()); if (Math.min(s.x, s.y, s.z) < 1e-4) continue;
+      try { const g = csg(A.geom, B.geom, 'intersect'); const V = triCount(g) ? massProps(g).V : 0, gs = triCount(g) ? g.boundingBox.getSize(V3()) : V3(); if (V > 1e-3 && Math.min(gs.x, gs.y, gs.z) > 10 * CSG_EPS) /* 맞닿기만 한 면은 간섭 아님 */ pairs.push({ a: A.id, b: B.id, an: A.name, bn: B.name, V, geom: g }); else g.dispose(); }
+      catch (_) { skipped++; }
+    }
+    clash = { pairs, geoms, n: pool.length, skipped };
+    flash(pairs.length ? `겹친 곳 ${pairs.length}군데를 찾았습니다` : '겹치는 바디가 없습니다');
+    rebuildScene(); renderPanel();
+  }, 30);
+}
+
+// ---------------------------------------------------------------- 큰 창 (도면 · 부품표 · 스크립트 · 이미지)
+const xsheet = $('#xsheet');
+function openSheet(title, body, acts = []) {
+  $('#xsTitle').textContent = title; $('#xsBody').innerHTML = body;
+  const box = $('#xsActs'); box.innerHTML = '';
+  for (const [label, fn, primary] of acts) { const b = document.createElement('button'); b.className = 'btn' + (primary ? ' primary' : ''); b.textContent = label; b.onclick = fn; box.appendChild(b); }
+  xsheet.hidden = false;
+}
+function closeSheet() { xsheet.hidden = true; $('#xsBody').innerHTML = ''; }
+$('#xsClose').onclick = closeSheet;
+xsheet.addEventListener('pointerdown', ev => { if (ev.target === xsheet) closeSheet(); });
+function download(name, data, type) {
+  if (!D.canDownload) { flash('이 화면에서는 파일 저장이 막혀 있습니다 — GitHub Pages 주소에서 열어 저장하세요'); return false; }
+  const u = URL.createObjectURL(data instanceof Blob ? data : new Blob([data], { type })); const a = document.createElement('a'); a.href = u; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 1500); return true;
+}
+const matOf = b => MATERIALS.find(m => m[0] === (state.props[b.id] || {}).mat) || MATERIALS[0];
+function bomRows() {
+  const groups = new Map();
+  for (const b of bodies) {
+    if (isHole(b)) continue;
+    const mp = massProps(b.geom), sz = mp.bb.getSize(V3()), mat = matOf(b);
+    const k = [mat[0], Math.round(Math.abs(mp.V) * 10), ...[sz.x, sz.y, sz.z].map(v => Math.round(v * 100))].join('|');
+    const g = groups.get(k); if (g) { g.qty++; g.names.push(b.name); continue; }
+    groups.set(k, { name: b.name, names: [b.name], mat: mat[1], density: mat[2], V: Math.abs(mp.V), size: sz, qty: 1 });
+  }
+  return [...groups.values()].map((g, i) => ({ ...g, no: i + 1, mass1: g.V / 1000 * g.density }));
+}
+function openBOM() {
+  const rows = bomRows(); if (!rows.length) { flash('부품표에 넣을 바디가 없습니다'); return; }
+  let tq = 0, tm = 0, h = `<table class="xtable"><thead><tr><th>번호</th><th>부품명</th><th>재질</th><th>수량</th><th>크기 (mm)</th><th>부피 (cm³)</th><th>개당 질량 (g)</th><th>합계 (g)</th></tr></thead><tbody>`;
+  for (const r of rows) { tq += r.qty; tm += r.mass1 * r.qty;
+    h += `<tr><td class="n">${r.no}</td><td title="${esc(r.names.join(', '))}">${esc(r.name)}${r.qty > 1 ? ` <span class="muted">외 ${r.qty - 1}</span>` : ''}</td><td>${esc(r.mat)}</td><td class="n">${r.qty}</td><td class="n">${fmt(r.size.x)} × ${fmt(r.size.y)} × ${fmt(r.size.z)}</td><td class="n">${fmt(r.V / 1000)}</td><td class="n">${fmt(r.mass1)}</td><td class="n">${fmt(r.mass1 * r.qty)}</td></tr>`; }
+  h += `</tbody><tfoot><tr><td></td><td>합계</td><td></td><td class="n">${tq}</td><td></td><td></td><td></td><td class="n">${fmt(tm)}</td></tr></tfoot></table>
+    <p class="hint">구멍 바디는 빼고, 재질·부피·크기가 같은 바디는 한 줄로 묶어 수량을 셉니다. 재질은 바디를 고른 뒤 오른쪽 패널에서 바꿉니다.</p>`;
+  const csv = () => '﻿번호,부품명,재질,수량,X,Y,Z,부피cm3,개당질량g,합계g\n' + rows.map(r => [r.no, `"${r.name.replace(/"/g, '""')}"`, r.mat, r.qty, fmt(r.size.x), fmt(r.size.y), fmt(r.size.z), fmt(r.V / 1000), fmt(r.mass1), fmt(r.mass1 * r.qty)].join(',')).join('\n');
+  openSheet('부품표 (BOM)', h, [['CSV 복사·저장', () => { closeSheet(); D.openText('부품표 CSV', '엑셀이나 구글 시트에 붙여넣거나 .csv로 저장하세요.', csv(), 'draftline-bom.csv'); }]]);
+}
+let lastDrawing = null;
+function openDrawing(opt) {
+  if (editing) { flash('먼저 편집 중인 피처를 확인하거나 취소하세요'); return; }
+  const list = bodies.filter(b => !isHole(b) && !(state.props[b.id] && state.props[b.id].hidden));
+  if (!list.length) { flash('도면으로 만들 바디가 없습니다'); return; }
+  const o = Object.assign({ hidden: true, iso: true }, lastDrawing && lastDrawing.opt, opt);
+  flash('도면을 만드는 중…');
+  setTimeout(() => {
+    let d;
+    try {
+      const parts = bomRows().map(r => ({ no: r.no, name: r.name, mat: r.mat, qty: r.qty, mass: fmt(r.mass1) }));
+      d = makeDrawing(list.map(b => ({ geom: b.geom, edges: edgeSegs(b.geom, 25) })), { title: list.length === 1 ? list[0].name : 'Draftline 조립품', parts, date: new Date().toISOString().slice(0, 10), hidden: o.hidden, iso: o.iso });
+    } catch (err) { flash('도면을 만들지 못했습니다: ' + (err && err.message || err)); return; }
+    lastDrawing = { opt: o, d };
+    const body = `<div class="row" style="font-size:13px"><label><input type="checkbox" id="dwHid" ${o.hidden ? 'checked' : ''}> 숨은 선 (파선)</label><label><input type="checkbox" id="dwIso" ${o.iso ? 'checked' : ''}> 등각도</label><span class="muted">척도 ${d.scale} · A3 · 3각법 · 선 ${d.counts.vis + d.counts.hid}개</span></div><div class="drawing">${d.svg}</div>
+      <p class="hint">보이는 바디(구멍 제외)를 정면(앞) · 평면(위) · 우측면에서 투상하고 전체 치수와 부품표를 넣었습니다. 모델을 고친 뒤 다시 [도면]을 누르면 새로 그립니다.</p>`;
+    openSheet('2D 도면', body, [['SVG', () => { closeSheet(); D.openText('도면 SVG', '브라우저·일러스트레이터·잉크스케이프에서 열 수 있습니다. 실제 크기(mm)로 인쇄됩니다.', d.svg, 'draftline-drawing.svg'); }], ['DXF', () => { closeSheet(); D.openText('도면 DXF', 'AutoCAD R12 형식 (도면 종이 좌표, mm). 레이어: VISIBLE / HIDDEN / DIM / BORDER.', d.dxf, 'draftline-drawing.dxf'); }], ['인쇄', () => printSVG(d.svg), true]]);
+    $('#dwHid').onchange = e => openDrawing({ hidden: e.target.checked });
+    $('#dwIso').onchange = e => openDrawing({ iso: e.target.checked });
+  }, 30);
+}
+function printSVG(svg) {
+  const w = window.open('', '_blank');
+  if (!w) { flash('새 창을 열 수 없습니다 — SVG로 저장해서 인쇄하세요'); return; }
+  w.document.write(`<!doctype html><meta charset="utf-8"><title>Draftline 도면</title><style>@page{size:A3 landscape;margin:0}html,body{margin:0}svg{width:420mm;height:297mm;display:block}</style>${svg}<script>onload=()=>setTimeout(()=>print(),200)<\/script>`); w.document.close();
+}
+function export3MF() {
+  const list = bodies.filter(b => !isHole(b) && (selBody ? selSet.has(b.id) : !(state.props[b.id] && state.props[b.id].hidden)));
+  if (!list.length) { flash('내보낼 바디가 없습니다'); return; }
+  const data = make3MF(list.map(b => ({ name: b.name, geom: b.geom, color: bodyColor(b, bodies.indexOf(b)) })));
+  if (download('draftline.3mf', new Blob([data], { type: 'model/3mf' }))) flash(`3MF로 바디 ${list.length}개를 저장했습니다 (색상 포함)`);
+}
+function exportPNG() {
+  const k = Math.min(3, 2 * (window.devicePixelRatio || 1)) / renderer.getPixelRatio();
+  const old = renderer.getPixelRatio(); gGizmo.visible = false;
+  renderer.setPixelRatio(old * k); resize(); renderer.render(scene, camera);
+  const url = renderer.domElement.toDataURL('image/png');
+  renderer.setPixelRatio(old); gGizmo.visible = true; resize();
+  openSheet('화면 이미지', `<img src="${url}" alt="모델 화면 이미지"><p class="hint">표시 방식을 <b>사실적 렌더링</b>으로 바꾸면 재질과 그림자가 들어간 이미지를 얻을 수 있습니다. 이미지를 오른쪽 클릭해 저장할 수도 있습니다.</p>`,
+    [['PNG 저장', () => { fetch(url).then(r => r.blob()).then(b => download('draftline.png', b)); }, true]]);
+}
+
+// ---------------------------------------------------------------- 스크립트 (매크로)
+const SCRIPT_KEY = KEY + '.script';
+const SCRIPT_SAMPLE = `// 예제: 구멍 4개 받침판 + 기둥 — [실행]을 눌러 보세요
+// 도형: cad.box / cylinder / sphere / cone / torus / wedge / pyramid / tube / hemisphere ({치수..., x, y, z, hole, color, mat, name})
+const X0 = 200;                                   // 기존 모델 옆에 만듦
+const plate = cad.box({ w: 80, d: 50, h: 6, x: X0, mat: 'al', name: '받침판' });
+const holes = [[-32, -17], [32, -17], [-32, 17], [32, 17]].map(([x, y]) => cad.cylinder({ r: 3, h: 6, x: X0 + x, y, hole: true }));
+cad.group([plate, ...holes]);                      // 솔리드는 합치고 구멍은 뺌
+const post = cad.tube({ r: 8, r2: 5, h: 30, x: X0 - 20, z: 6, mat: 'steel', name: '기둥' });
+cad.pattern(post, { kind: 'rect', nx: 2, dx: 40 });
+log('바디', cad.bodies().length, '개', cad.bodies().map(b => b.name + ' ' + b.volume.toFixed(0) + 'mm³'));
+`;
+const SCRIPT_HELP = `cad.<도형>({...})  상자 box{w,d,h} 원통 cylinder{r,h} 구 sphere{r} 원뿔 cone{r1,r2,h} 토러스 torus{R,r}
+                   쐐기 wedge{w,d,h} 피라미드 pyramid{w,h} 튜브 tube{r,r2,h} 반구 hemisphere{r}
+                   + 공통 x, y, z, op:'new'|'join'|'cut'|'intersect', target, hole, color:'#hex', mat, name  → 바디 id
+cad.extrude({ profiles:'all' 또는 ['1'], distance, plane:'XY'|'XZ'|'YZ', offset, dir:'one'|'sym', op })
+cad.revolve({ profiles, axis:'X'|'Y'|선id, angle })
+cad.boolean(대상, [도구...], 'cut'|'join'|'intersect')   cad.group([id...])   cad.move(id, {dx,dy,dz,rx,ry,rz})
+cad.pattern(id, {kind:'rect', nx,dx, ny,dy} 또는 {kind:'circ', n, angle, cx, cy})   cad.mirror(id, {plane, offset, merge})
+cad.shell(id, {t, dir})   cad.copy(id, {dx,dy,dz})   cad.remove(id)   cad.set(id, {name,color,mat,hole,hidden})
+cad.bodies() → [{id,name,volume,area,min,max,size}]   cad.clear()   cad.feature({type, ...})
+sketch.line(x1,y1,x2,y2) rect(x,y,w,h) circle(x,y,r) polyline([[x,y],...], closed) arc(cx,cy,r,시작°,끝°) clear()
+log(...)  재질 mat: ${MATERIALS.map(m => m[0]).join(' ')}`;
+function scriptAPI(logf) {
+  let stale = false;
+  const sync = () => { if (stale) { stale = false; regen(); } };
+  const push = f => { const nf = { ...clone(DEFAULTS[f.type] || {}), ...f, id: state.nextFid++ }; state.features.push(nf); stale = true; return nf; };
+  const props = (id, p) => { if (!p) return; const o = (state.props[id] ||= {}); for (const k of ['name', 'color', 'mat', 'hole', 'hidden']) if (p[k] !== undefined) o[k] = p[k]; stale = true; };
+  const NUMS = new Set(['w', 'd', 'h', 'r', 'r1', 'r2', 'R', 'x', 'y', 'z']);
+  const prim = type => (p = {}) => {
+    const f = { type, op: p.op || 'new', target: p.target || '' };
+    for (const [k, v] of Object.entries(p)) if (NUMS.has(k)) { if (!isFinite(+v)) throw new Error(`${type}.${k} 값이 숫자가 아닙니다`); f[k] = +v; }
+    const nf = push(f); const id = 'b' + nf.id;
+    if (f.op === 'new') { props(id, p); return id; }
+    return f.target || null;
+  };
+  const cad = {
+    feature: f => { if (!f || !DEFAULTS[f.type] || f.type === 'place') throw new Error('알 수 없는 피처 종류: ' + (f && f.type)); return 'b' + push(clone(f)).id; },
+    extrude(p = {}) {
+      sync(); let keys = p.profiles;
+      if (!keys || keys === 'all') keys = regions.filter(r => !r.parentKey).map(r => r.key);
+      if (!keys.length) throw new Error('스케치에 닫힌 도형이 없습니다');
+      const nf = push({ type: 'extrude', ...p, profiles: keys.map(String) }); props('b' + nf.id, p); return 'b' + nf.id;
+    },
+    revolve(p = {}) { sync(); let keys = p.profiles; if (!keys || keys === 'all') keys = regions.filter(r => !r.parentKey).map(r => r.key); const nf = push({ type: 'revolve', ...p, profiles: keys.map(String) }); props('b' + nf.id, p); return 'b' + nf.id; },
+    boolean(target, tools, op = 'cut', keep = false) { push({ type: 'boolean', target, tools: [].concat(tools), op, keep }); return target; },
+    group(ids) {
+      sync(); const list = [].concat(ids).map(findBody).filter(Boolean), sol = list.filter(b => !isHole(b)), hol = list.filter(isHole);
+      if (!sol.length) throw new Error('그룹에는 솔리드가 하나 이상 있어야 합니다');
+      push({ type: 'group', target: sol[0].id, solids: sol.slice(1).map(b => b.id), holes: hol.map(b => b.id) }); return sol[0].id;
+    },
+    move(id, p = {}) { push({ type: 'move', body: id, ...p }); return id; },
+    pattern(id, p = {}) { push({ type: 'pattern', body: id, ...p }); return id; },
+    mirror(id, p = {}) { push({ type: 'mirror', body: id, ...p }); return id; },
+    shell(id, p = {}) { push({ type: 'shell', body: id, ...p }); return id; },
+    copy(id, p = {}) { const nf = push({ type: 'copy', body: id, ...p }); return 'b' + nf.id; },
+    remove(id) { push({ type: 'remove', body: id }); },
+    set(id, p) { props(id, p); return id; },
+    bodies() { sync(); return bodies.map(b => { const mp = massProps(b.geom), bb = mp.bb; return { id: b.id, name: b.name, volume: Math.abs(mp.V), area: mp.A, min: bb.min.toArray(), max: bb.max.toArray(), size: bb.getSize(V3()).toArray(), hole: isHole(b) }; }); },
+    clear() { state.features = []; state.props = {}; stale = true; },
+  };
+  for (const t of PRIMS) if (t !== 'relief') cad[t] = prim(t);
+  const sk = list => { const ids = D.addEnts(list); stale = true; return ids.length === 1 ? ids[0] : ids; };
+  const P = (x, y) => ({ x: +x, y: +y });
+  const sketch = {
+    line: (x1, y1, x2, y2) => sk([{ type: 'line', a: P(x1, y1), b: P(x2, y2) }]),
+    rect: (x, y, w, h) => sk([{ type: 'rect', a: P(x, y), b: P(+x + +w, +y + +h) }]),
+    circle: (x, y, r) => sk([{ type: 'circle', c: P(x, y), r: +r }]),
+    polyline: (pts, closed = false) => sk([{ type: 'pline', pts: pts.map(([x, y]) => P(x, y)), closed }]),
+    arc: (cx, cy, r, a0, a1) => sk([{ type: 'arc', c: P(cx, cy), r: +r, a0: a0 * DEG, a1: a1 * DEG }]),
+    clear: () => { D.clearEnts(); stale = true; },
+  };
+  return { cad, sketch, log: logf, done: () => sync() };
+}
+function openScript() {
+  let code = SCRIPT_SAMPLE; try { code = localStorage.getItem(SCRIPT_KEY) || SCRIPT_SAMPLE; } catch (_) {}
+  openSheet('스크립트 (매크로)', `<textarea id="scCode" spellcheck="false" aria-label="스크립트">${esc(code)}</textarea><pre id="scOut">실행 결과가 여기에 나옵니다. 실행한 내용은 Ctrl+Z 한 번으로 되돌릴 수 있습니다.</pre><details><summary class="hint" style="cursor:pointer">명령 목록</summary><pre>${esc(SCRIPT_HELP)}</pre></details>`,
+    [['예제로', () => { $('#scCode').value = SCRIPT_SAMPLE; }], ['실행 (Ctrl+Enter)', runScript, true]]);
+  const ta = $('#scCode');
+  ta.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runScript(); }
+    else if (e.key === 'Tab') { e.preventDefault(); const s = ta.selectionStart; ta.setRangeText('  ', s, ta.selectionEnd, 'end'); }
+    e.stopPropagation();
+  });
+}
+function runScript() {
+  const code = $('#scCode').value, out = $('#scOut'), lines = [];
+  try { localStorage.setItem(SCRIPT_KEY, code); } catch (_) {}
+  if (editing) cancelEdit(false); if (placing) endPlace();
+  const snap = JSON.stringify(state); checkpoint();
+  const show = v => typeof v === 'string' ? v : (() => { try { return JSON.stringify(v); } catch (_) { return String(v); } })();
+  const api = scriptAPI((...a) => lines.push(a.map(show).join(' ')));
+  const t0 = performance.now();
+  try {
+    new Function('cad', 'sketch', 'log', 'Math', '"use strict";\n' + code)(api.cad, api.sketch, api.log, Math);
+    api.done(); persist(); regen();
+    const errs = Object.entries(errors).map(([fid, m]) => `피처 ${fid}: ${m}`);
+    out.className = errs.length ? 'err' : '';
+    out.textContent = [...lines, `— 완료 (${Math.round(performance.now() - t0)} ms) · 바디 ${bodies.length}개 · 피처 ${state.features.length}개`, ...errs].join('\n');
+  } catch (err) {
+    state = JSON.parse(snap); undoS.pop(); persist(); regen();
+    out.className = 'err'; out.textContent = [...lines, '오류: ' + (err && err.message || err), '모델은 실행 전 상태로 되돌렸습니다.'].join('\n');
+  }
+}
+
 // ---------------------------------------------------------------- 이벤트
 panel.addEventListener('input', ev => {
   const t = ev.target;
+  if (t.id === 'vExp') { view.explode = +t.value; const l = t.previousElementSibling; if (l) l.textContent = `분해도 ${Math.round(view.explode * 100)}% (X)`; syncToolButtons(); rebuildScene(); return; }
   if (t.id === 'vSecPos') { view.secPos = +t.value; t.nextElementSibling && (t.nextElementSibling.textContent = `단면 위치 ${fmt(view.secPos)} mm`); rebuildScene(); return; }
   if (placing && t.dataset.pf && t.type !== 'checkbox') { if (isFinite(+t.value) && t.value !== '') { placing.f[t.dataset.pf] = +t.value; clearTimeout(panel._g); panel._g = setTimeout(updateGhost, 120); } return; }
   if (editing && t.dataset.mv) { const [id, i] = t.dataset.mv.split(':'); const v = +t.value; if (isFinite(v)) { const arr = editing.feat.moves[id]; arr[(arr.length === 16 ? 12 : 0) + +i] = v; clearTimeout(panel._t); panel._t = setTimeout(regen, 160); } return; }
@@ -1369,8 +1698,10 @@ panel.addEventListener('change', ev => {
   const b = selBody && findBody(selBody);
   if (t.id === 'bName' && b) { const name = t.value.trim(); if (name) { checkpoint(); (state.props[b.id] ||= {}).name = name; persist(); regen(); } return; }
   if (t.id === 'bMat' && b) { (state.props[b.id] ||= {}).mat = t.value; persist(); renderPanel(); return; }
-  if (t.id === 'vDisp') { view.display = t.value; persist(); rebuildScene(); return; }
+  if (t.id === 'vDisp') { view.display = t.value; persist(); rebuildScene(); renderPanel(); return; }
   if (t.id === 'vSnap') { view.snap = +t.value || 1; persist(); return; }
+  if (t.id === 'vDDir') { view.draftDir = t.value; persist(); rebuildScene(); return; }
+  if (t.id === 'vDAng') { const v = +t.value; if (isFinite(v) && v >= 0 && v < 90) { view.draftAng = v; persist(); rebuildScene(); renderPanel(); } return; }
   if (placing && t.dataset.pf) {
     if (t.dataset.pf === '__hole') placing.hole = t.checked; else if (t.type === 'checkbox') placing.f[t.dataset.pf] = t.checked; else if (isFinite(+t.value)) placing.f[t.dataset.pf] = +t.value;
     updateGhost(); return;
@@ -1395,6 +1726,8 @@ panel.addEventListener('click', ev => {
     armPlace(t.dataset.shape); return;
   }
   if (t.id === 'placeCancel') { endPlace(); return; }
+  if (t.id === 'clashOff') { clash = null; rebuildScene(); renderPanel(); return; }
+  if (t.dataset.clash) { const p = clash && clash.pairs[+t.dataset.clash]; if (p) { selSet = new Set([p.a, p.b]); selBody = p.b; rebuildScene(); renderPanel(); } return; }
   if (t.dataset.align) { const [ax, w] = t.dataset.align.split(':'); alignSel(ax, w); return; }
   if (t.dataset.hole) { setHole(t.dataset.hole === '1'); return; }
   if (t.dataset.editf) { editFeature(+t.dataset.editf); return; }
@@ -1427,6 +1760,13 @@ function command(c) {
     case 'top': case 'front': case 'right': case 'iso': return setView(VIEWS[c]);
     case 'measure': measure.on = !measure.on; measure.pts = []; syncToolButtons(); rebuildMeasure(); draw(); if (!editing) renderPanel(); return;
     case 'stl': case 'obj': return exportMesh(c);
+    case '3mf': return export3MF();
+    case 'png': return exportPNG();
+    case 'drawing': return openDrawing();
+    case 'clash': return runClash();
+    case 'explode': return animateExplode(view.explode > 0 ? 0 : 1);
+    case 'bom': return openBOM();
+    case 'script': return openScript();
     case 'delete': return deleteBody();
     case 'group': return groupSel();
     case 'dup': return duplicateSel();
@@ -1465,7 +1805,7 @@ renderer.domElement.addEventListener('pointermove', e => {
   setNdc(e); const p = ray.ray.intersectPlane(g.plane, V3()); if (!p) return;
   const sn = v => Math.round(v / view.snap) * view.snap;
   g.d.set(sn(p.x - g.start.x), sn(p.y - g.start.y), 0);
-  for (const o of gBodies.children) if (selSet.has(o.userData.bid) || selSet.has(o.userData.bidE)) o.position.copy(g.d);
+  for (const o of gBodies.children) if (selSet.has(o.userData.bid) || selSet.has(o.userData.bidE)) o.position.copy(o.userData.ex || V3()).add(g.d);
   flash(`이동 X ${fmt(g.d.x)} · Y ${fmt(g.d.y)} mm`); draw();
 });
 renderer.domElement.addEventListener('pointerup', e => {
@@ -1527,6 +1867,7 @@ renderer.domElement.addEventListener('pointerup', e => {
 });
 addEventListener('keydown', e => {
   if (document.body.dataset.workspace !== '3d' || !$('#modal').hidden) return;
+  if (!$('#xsheet').hidden) { if (e.key === 'Escape') closeSheet(); return; }
   if (e.target.matches && e.target.matches('input,textarea,select')) { if (e.key === 'Escape' && editing) { cancelEdit(); } return; }
   const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
   if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
@@ -1550,6 +1891,7 @@ addEventListener('keydown', e => {
   if (k === 'e') startFeature('extrude');
   else if (k === 'f') setView();
   else if (k === 'm') command('measure');
+  else if (k === 'x' && !editing) command('explode');
 });
 addEventListener('draftline:ws', e => { if (e.detail === '3d') { resize(); if (dirty) regen(); else draw(); } });
 D.onChange(() => { dirty = true; if (document.body.dataset.workspace === '3d') regen(); });
